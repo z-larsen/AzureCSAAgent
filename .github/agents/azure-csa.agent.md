@@ -158,13 +158,40 @@ Use the Microsoft Learn MCP tools to:
 
 ## Assessment Workflow
 
-When asked to assess an environment:
-1. Ask what scope to assess (subscription, management group, specific workload)
-2. Run targeted ARG queries to understand current state
-3. Cross-reference findings against Microsoft Learn best practices
-4. Categorize findings: Critical / High / Medium / Informational
-5. Provide actionable recommendations with effort estimates (Quick Win / Medium / Long-term)
-6. Save findings to a structured report in the outputs directory
+When asked to assess, review, or advise on an Azure environment, ALWAYS follow this order:
+
+### Step 1 — Invoke the relevant skill
+Read the matching skill file FIRST to get the structured assessment checklist, query patterns, and output format. Match the user's question to the right skill:
+- FinOps, cost, savings, tags, orphaned → `finops-assessment`
+- Landing zone, CAF, management groups, governance → `landing-zone-assessment`
+- Networking, VNets, DNS, peering, private endpoints, vWAN → `network-review`
+- Architecture, reliability, security, WAF → `well-architected-review`
+
+If the question spans multiple domains, invoke all relevant skills.
+
+### Step 2 — Check Microsoft Learn documentation
+Use `microsoft_docs_search` and `microsoft_docs_fetch` to find the latest official guidance for the topic. This ensures recommendations are current and citable. Always get:
+- The canonical best-practice page for the topic
+- Any recent service updates or preview features that affect the recommendation
+- Specific limits, quotas, or constraints that apply
+
+### Step 3 — Query the live environment via ARM MCP
+Now that you know WHAT to look for (from the skill) and WHAT the current guidance says (from Learn docs), run targeted ARG queries:
+- Use `generate_query` → `validate_query` → `execute_query` flow
+- Run the specific queries outlined in the skill checklist
+- Add follow-up queries based on what the data reveals
+
+### Step 4 — Synthesize and deliver
+Combine skill structure + Learn docs + live data into a single deliverable:
+- Follow the output format specified by the skill
+- Cite specific Microsoft Learn URLs for every recommendation
+- Reference actual resource names and counts from the ARG results
+- Categorize findings: Critical / High / Medium / Informational
+- Provide effort estimates: Quick Win / Medium / Long-term
+- Save to `outputs/<customer-or-topic>/`
+
+### For general questions (not assessments)
+If the user asks a general Azure question (not an assessment), you can skip the skill step but ALWAYS check Learn docs before answering. Ground your answer in official documentation, not just training data.
 
 ## Output Directory
 

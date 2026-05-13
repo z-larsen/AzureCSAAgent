@@ -16,13 +16,27 @@ console = Console()
 
 ARG_SYSTEM_PROMPT = """You are an Azure Resource Graph (ARG) query expert. Given a natural language question about Azure resources, generate a valid KQL query that answers it.
 
-Rules:
+CRITICAL — ARG property access rules:
+- Resource properties are ALWAYS nested under `properties.` — never use bare field names
+- CORRECT: properties.provisioningState, properties.addressSpace.addressPrefixes
+- WRONG: provisioningState, addressSpace (these will fail with Operator_FailedToResolveEntity)
+- Top-level columns that do NOT need `properties.` prefix: id, name, type, location, resourceGroup, subscriptionId, tenantId, kind, managedBy, sku, plan, tags, identity, zones
+- To access nested objects, use dot notation: properties.ipConfigurations[0].properties.subnet.id
+- Use `tostring()` or `todynamic()` when extracting nested values for projection
+- Use `extend` to create friendly column names from deep paths before `project`
+
+Common patterns:
+- Private endpoints: properties.privateLinkServiceConnections[0].properties.privateLinkServiceId, properties.customDnsConfigs (not customDnsConfigurations)
+- VMs: properties.hardwareProfile.vmSize, properties.storageProfile.osDisk.osType
+- VNets: properties.addressSpace.addressPrefixes, properties.subnets
+- NICs: properties.ipConfigurations
+- NSGs: properties.securityRules
+- Disks: properties.diskSizeGB, properties.diskState
+
+General rules:
 - Output ONLY the KQL query, no explanation, no markdown fences
 - Use the Resources, ResourceContainers, or advisorresources tables as appropriate
 - Use proper KQL syntax: where, extend, project, summarize, mv-expand, join
-- For networking: microsoft.network/virtualnetworks, microsoft.network/virtualwan, microsoft.network/virtualhubs, etc.
-- For compute: microsoft.compute/virtualmachines, microsoft.compute/disks
-- For storage: microsoft.storage/storageaccounts
 - Always include useful columns like name, resourceGroup, location, subscriptionId
 - Limit results to 100 rows max unless the user asks for aggregations
 """
@@ -99,6 +113,7 @@ def ask(question: str):
     console.print(f"\n[bold cyan]Question:[/bold cyan] {question}")
 
     # Generate KQL from natural language
+    console.print(f"\n[dim]⚙  Generating ARG query...[/dim]")
     kql = _generate_kql(question)
     if not kql:
         return
@@ -113,20 +128,35 @@ def ask(question: str):
         console.print("[dim]Skipped.[/dim]")
         return
 
-    # Execute
+    # Execute with auto-retry on invalid queries
+    console.print(f"[dim]🔍 Executing query against Azure Resource Graph...[/dim]")
     try:
         result = execute_query(kql)
-        console.print(f"\n[green]Returned {result['count']} rows[/green]\n")
-        if isinstance(result["data"], list) and result["data"]:
-            _print_table(result["data"])
-            # Analyze results with CSA expertise
-            _analyze_results(question, kql, result["data"])
-        elif result["data"]:
-            console.print(result["data"])
-        else:
-            console.print("[dim]No results returned.[/dim]")
     except Exception as e:
-        console.print(f"[red]Query failed: {e}[/red]")
+        error_msg = str(e)
+        console.print(f"\n[yellow]⚠  Query error — attempting auto-fix...[/yellow]")
+        fixed_kql = _retry_kql(question, kql, error_msg)
+        if not fixed_kql:
+            console.print(f"[red]Could not fix query: {error_msg}[/red]")
+            return
+        kql = fixed_kql
+        console.print(f"\n[bold yellow]Corrected KQL:[/bold yellow]")
+        console.print(Syntax(kql, "sql", theme="monokai", padding=1))
+        try:
+            result = execute_query(kql)
+        except Exception as e2:
+            console.print(f"[red]Retry also failed: {e2}[/red]")
+            return
+
+    console.print(f"\n[green]✓ Returned {result['count']} rows[/green]\n")
+    if isinstance(result["data"], list) and result["data"]:
+        _print_table(result["data"])
+        console.print(f"\n[dim]📊 Running CSA analysis...[/dim]")
+        _analyze_results(question, kql, result["data"])
+    elif result["data"]:
+        console.print(result["data"])
+    else:
+        console.print("[dim]No results returned.[/dim]")
 
 
 def _generate_kql(question: str) -> str | None:
@@ -148,6 +178,30 @@ def _generate_kql(question: str) -> str | None:
         return response.choices[0].message.content.strip()
     except Exception as e:
         console.print(f"[red]LLM error generating KQL: {e}[/red]")
+        return None
+
+
+def _retry_kql(question: str, failed_kql: str, error_msg: str) -> str | None:
+    """Ask the LLM to fix a failed KQL query based on the error message."""
+    client, model = _get_openai_client()
+    if not client:
+        return None
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": ARG_SYSTEM_PROMPT},
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": failed_kql},
+                {"role": "user", "content": f"That query failed with this error:\n{error_msg}\n\nFix the query. Remember: resource properties must be accessed via `properties.` prefix (e.g. properties.provisioningState, not provisioningState). Output ONLY the corrected KQL."},
+            ],
+            temperature=0,
+            max_tokens=500,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        console.print(f"[red]LLM error during retry: {e}[/red]")
         return None
 
 

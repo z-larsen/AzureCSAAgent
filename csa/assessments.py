@@ -70,10 +70,26 @@ QUERIES = {
 
 def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool = True):
     """Run an assessment and generate a report."""
+    skill_map = {
+        "general": None,
+        "finops": "finops-assessment",
+        "landing-zone": "landing-zone-assessment",
+        "network": "network-review",
+        "waf": "well-architected-review",
+    }
+
     console.print(f"\n[bold green]Azure CSA Assessment[/bold green]")
     console.print(f"  Scope: {scope}")
     console.print(f"  Type:  {assessment_type}")
     console.print(f"  Output: {output_dir}/\n")
+
+    skill_name = skill_map.get(assessment_type)
+    if skill_name:
+        console.print(f"[dim]⚙  Loading skill: {skill_name}...[/dim]")
+    else:
+        console.print(f"[dim]⚙  Running general assessment (no specific skill)...[/dim]")
+
+    console.print(f"[dim]🔍 Querying Azure Resource Graph...[/dim]\n")
 
     subscriptions = [scope] if "-" in scope and len(scope) == 36 else None
 
@@ -89,7 +105,7 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
     results = {}
 
     for query_name in selected:
-        console.print(f"  Running: {query_name}...", end=" ")
+        console.print(f"  🔍 {query_name}...", end=" ")
         try:
             result = execute_query(QUERIES[query_name], subscriptions)
             results[query_name] = result
@@ -99,6 +115,7 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
             results[query_name] = {"error": str(e)}
 
     # Write results to output
+    console.print(f"\n[dim]📝 Generating report...[/dim]")
     out_path = Path(output_dir) / f"{assessment_type}-assessment.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -140,4 +157,4 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
                     console.print(f"    {data['data']}")
             console.print()
 
-    console.print(f"[bold green]Report saved to {out_path}[/bold green]")
+    console.print(f"[bold green]✓ Report saved to {out_path}[/bold green]")
