@@ -285,6 +285,31 @@ These are picked up from the user's VS Code environment when the [Azure MCP Serv
 | `entra-app-registration` | Entra ID app registration, OAuth 2.0 configuration, MSAL integration |
 | `azure-storage` | Blob, File, Queue, Table, Data Lake — access tiers, lifecycle management, storage patterns |
 
+---
+
+## OSS Project Disclaimer
+
+This repository contains sample tooling developed by a Microsoft employee and is provided for informational and educational purposes only.
+
+**This is not an official Microsoft product, service, or supported offering.**
+
+This project is provided "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO:
+
+- Production readiness
+- Security hardening
+- Tenant compatibility
+- Governance alignment
+- Assessment outcome guarantees
+- Policy compliance assurance
+
+Microsoft does not provide support for this project under any Microsoft support agreement, Premier/Unified Support plan, or Azure support contract.
+
+No Microsoft service level agreements (SLAs), warranties, or product commitments apply to this repository or any derivative use of its contents.
+
+Execution of this tool within an Azure tenant may result in resource querying, architecture assessment, governance evaluation, or policy-related outcomes depending on permissions granted.
+
+Users are solely responsible for validating all outputs and recommendations prior to implementation in production environments.
+
 ## License
 
 MIT
