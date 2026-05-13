@@ -106,7 +106,9 @@ Or run directly without the REPL:
 azure-csa assess <subscription-id> -t finops -o outputs
 ```
 
-### Assessment types
+### CLI assessment types
+
+These are the pre-built assessment profiles available from the CLI. For the full skill set (18 skills including compliance, diagnostics, Kubernetes, RBAC, migration, and more), use the [VS Code chat mode](#path-1-vs-code-chat-mode) or the [natural language CLI](#path-3-cli--full-natural-language).
 
 | Type | What it checks |
 |------|----------------|
@@ -247,18 +249,41 @@ export AZURE_OPENAI_API_KEY=<your-key>
 └── .gitignore
 ```
 
-## VS Code skills reference
+## Skills (18 total)
 
-The chat mode includes skills for structured assessments. These are automatically available when using the VS Code chat mode:
+The VS Code chat mode invokes skills to structure assessments and ground recommendations. Skills are loaded automatically when the agent detects a matching topic.
+
+### Included in this repo (4)
+
+These ship with the agent and are always available:
 
 | Skill | Purpose |
 |-------|---------|
-| `finops-assessment` | FinOps maturity, cost optimization, tag coverage, commitment discounts |
-| `landing-zone-assessment` | CAF alignment, management group structure, policy coverage |
-| `network-review` | VNet topology, private endpoints, DNS, NSG audit, hybrid connectivity |
-| `well-architected-review` | All five WAF pillars with per-pillar scorecards |
+| `finops-assessment` | FinOps maturity, cost optimization, tag coverage, commitment discounts, AHB, right-sizing |
+| `landing-zone-assessment` | CAF alignment, management group hierarchy, subscription org, policy coverage, identity |
+| `network-review` | VNet topology, peering, private endpoints, DNS resolution, NSG audit, hybrid connectivity, vWAN |
+| `well-architected-review` | All five WAF pillars (Reliability, Security, Cost, Ops Excellence, Performance) with per-pillar scorecards |
 
-The chat mode also picks up 14 additional Azure skills (compliance, diagnostics, kubernetes, cost, etc.) when available in the user's VS Code environment.
+### Azure platform skills (14)
+
+These are picked up from the user's VS Code environment when the [Azure MCP Server](https://marketplace.visualstudio.com/items?itemName=ms-azuretools.vscode-azure-mcp-server) extension and related skills are installed:
+
+| Skill | Purpose |
+|-------|---------|
+| `azure-compliance` | Security audits, best-practice scans, Key Vault expiration checks, orphaned resource detection |
+| `azure-resource-lookup` | List, find, and inventory resources across subscriptions and resource groups |
+| `azure-resource-visualizer` | Generate Mermaid architecture diagrams from live resource groups |
+| `azure-cost` | Query historical costs, forecast spending, find savings, cost-by-tag/service/resource breakdowns |
+| `azure-rbac` | Find least-privilege roles, generate role assignments, audit permissions |
+| `azure-enterprise-infra-planner` | Architect landing zones, hub-spoke networks, multi-region DR, Bicep/Terraform generation |
+| `azure-diagnostics` | Debug production issues via AppLens, Azure Monitor, resource health, KQL log analysis |
+| `azure-kubernetes` | AKS cluster planning, SKU selection, networking, autoscaling, security, cost optimization |
+| `azure-quotas` | Check quotas and usage, validate capacity, request quota increases |
+| `azure-reliability` | Assess reliability posture — zone redundancy, ZRS storage, health probes, multi-region failover |
+| `azure-cloud-migrate` | Cross-cloud migration assessments (AWS/GCP → Azure), code conversion, migration reports |
+| `azure-validate` | Pre-deployment validation — Bicep/Terraform checks, RBAC verification, readiness preflight |
+| `entra-app-registration` | Entra ID app registration, OAuth 2.0 configuration, MSAL integration |
+| `azure-storage` | Blob, File, Queue, Table, Data Lake — access tiers, lifecycle management, storage patterns |
 
 ## License
 
