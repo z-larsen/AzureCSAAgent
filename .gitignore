@@ -1,0 +1,20 @@
+# Virtual environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Outputs contain customer-specific data
+outputs/
+
+# IDE
+.vscode/
+
+# Distribution
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
