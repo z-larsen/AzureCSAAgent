@@ -298,13 +298,26 @@ def ask(question: str, history: list[dict] | None = None) -> str | None:
             else:
                 console.print(f"  [yellow]⚠[/yellow] {q['title']} — no results")
 
+        # Identify gaps and ask clarifying questions before analysis
+        extra_context = ""
+        if all_results:
+            tracker.started("gap-analysis")
+            tracker.status("checking for information gaps")
+            data_preview = "\n".join(
+                f"- {r['title']}: {r['count']} rows" for r in all_results
+            )
+            gaps = _identify_gaps(question, data_preview)
+            tracker.done("gap-analysis")
+            if gaps:
+                extra_context = _ask_clarifying_questions(gaps)
+
         # Consolidated analysis across all results
         analysis_text = None
         if all_results:
             console.print()
             tracker.started("csa-analysis")
             tracker.status("running consolidated CSA analysis")
-            analysis_text = _analyze_multi_results(question, all_results, history)
+            analysis_text = _analyze_multi_results(question, all_results, history, extra_context)
             tracker.progress("analysis complete")
             tracker.done("csa-analysis")
 
@@ -387,9 +400,20 @@ def _execute_and_analyze(question: str, kql: str, tracker: StepTracker, history:
     console.print(f"\n[green]✓ Returned {result['count']} rows[/green]\n")
     if isinstance(result["data"], list) and result["data"]:
         _print_table(result["data"])
+
+        # Identify gaps and ask clarifying questions
+        tracker.started("gap-analysis")
+        tracker.status("checking for information gaps")
+        data_preview = f"Query returned {result['count']} rows of data"
+        gaps = _identify_gaps(question, data_preview)
+        tracker.done("gap-analysis")
+        extra_context = ""
+        if gaps:
+            extra_context = _ask_clarifying_questions(gaps)
+
         tracker.started("csa-analysis")
         tracker.status("running CSA analysis on results")
-        analysis_text = _analyze_results(question, kql, result["data"], history)
+        analysis_text = _analyze_results(question, kql, result["data"], history, extra_context)
         tracker.progress("analysis complete")
         tracker.done("csa-analysis")
         return analysis_text
@@ -451,7 +475,7 @@ def _retry_kql(question: str, failed_kql: str, error_msg: str) -> str | None:
         return None
 
 
-def _analyze_results(question: str, kql: str, data: list[dict], history: list[dict] | None = None) -> str | None:
+def _analyze_results(question: str, kql: str, data: list[dict], history: list[dict] | None = None, extra_context: str = "") -> str | None:
     """Run a second LLM pass to analyze ARG results with CSA expertise."""
     client, model = _get_openai_client()
     if not client:
@@ -474,8 +498,9 @@ def _analyze_results(question: str, kql: str, data: list[dict], history: list[di
 ```json
 {data_summary}
 ```
+{extra_context}
 
-Analyze these results and provide your CSA assessment."""
+Analyze these results and provide your CSA assessment. Incorporate any additional context provided by the user into your recommendations."""
 
     console.print()
     console.print(Panel.fit("[bold magenta]CSA Analysis[/bold magenta]", border_style="magenta"))
@@ -513,7 +538,7 @@ Analyze these results and provide your CSA assessment."""
         return None
 
 
-def _analyze_multi_results(question: str, results: list[dict], history: list[dict] | None = None) -> str | None:
+def _analyze_multi_results(question: str, results: list[dict], history: list[dict] | None = None, extra_context: str = "") -> str | None:
     """Run a single consolidated LLM analysis across multiple query results."""
     client, model = _get_openai_client()
     if not client:
@@ -547,7 +572,10 @@ Provide a **single consolidated assessment** that:
 4. Provides a clear **action plan** with specific next steps
 5. If the question involves migration or transformation, outline phases with dependencies
 
-Be direct and actionable. Reference specific resources by name from the results."""
+Be direct and actionable. Reference specific resources by name from the results.
+{extra_context}
+
+Incorporate any additional context provided by the user into your recommendations."""
 
     console.print()
     console.print(Panel.fit("[bold magenta]Consolidated CSA Analysis[/bold magenta]", border_style="magenta"))
@@ -582,6 +610,95 @@ Be direct and actionable. Reference specific resources by name from the results.
     except Exception as e:
         console.print(f"[red]Analysis error: {e}[/red]")
         return None
+
+
+GAPS_SYSTEM_PROMPT = """You are a senior Azure Cloud Solution Architect reviewing query results.
+
+Given a user's question and the data retrieved from Azure Resource Graph, identify what CRITICAL information is MISSING that you cannot discover from ARG alone. These are things only the user would know.
+
+Return a JSON array of clarifying questions. Each item has:
+- "question": A short, specific question (one sentence)
+- "why": One sentence explaining why this matters for the assessment
+
+Rules:
+- Only ask questions whose answers would MATERIALLY change the analysis or recommendations
+- Do NOT ask for things you can infer or assume reasonable defaults for
+- Do NOT ask about things that ARG already answered in the results
+- Maximum 4 questions — fewer is better
+- If the data is sufficient for a good analysis, return an empty array: []
+- Return ONLY the JSON array, no other text
+
+Examples of GOOD questions (things only the user knows):
+- "Do you have any on-premises connectivity requirements (VPN/ExpressRoute)?"
+- "What is your target RTO/RPO for disaster recovery?"
+- "Are there compliance requirements (HIPAA, PCI-DSS, FedRAMP) that constrain the architecture?"
+- "What is the expected traffic pattern — steady state or bursty?"
+
+Examples of BAD questions (don't ask these):
+- "What VNets do you have?" (ARG already shows this)
+- "What SKU are your VMs?" (ARG already shows this)
+- "Would you like me to run more queries?" (not a clarifying question)
+"""
+
+
+def _identify_gaps(question: str, data_summary: str) -> list[dict]:
+    """Ask the LLM to identify what clarifying information is needed before analysis."""
+    client, model = _get_openai_client()
+    if not client:
+        return []
+
+    user_msg = f"""**User's Question:** {question}
+
+**Data Retrieved from Azure Resource Graph:**
+{data_summary}
+
+What critical information is missing that only the user can provide? Return a JSON array of clarifying questions."""
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": GAPS_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0,
+            max_tokens=500,
+        )
+        token_session.record(response.usage, model, "Gap analysis")
+        content = response.choices[0].message.content.strip()
+        # Parse JSON — handle markdown fencing
+        content = re.sub(r"^```(?:json)?\n?", "", content)
+        content = re.sub(r"\n?```$", "", content)
+        questions = json.loads(content)
+        if isinstance(questions, list):
+            return questions
+        return []
+    except Exception:
+        return []
+
+
+def _ask_clarifying_questions(gaps: list[dict]) -> str:
+    """Present clarifying questions to the user and collect answers. Returns formatted context string."""
+    if not gaps:
+        return ""
+
+    console.print()
+    console.print(Panel.fit("[bold yellow]Clarifying Questions[/bold yellow]", border_style="yellow"))
+    console.print("[dim]The following would improve the analysis. Press Enter to skip any.[/dim]\n")
+
+    answers = []
+    for i, gap in enumerate(gaps):
+        console.print(f"  [cyan]{i + 1}.[/cyan] {gap['question']}")
+        console.print(f"     [dim]{gap.get('why', '')}[/dim]")
+        reply = console.input(f"     [bold]>[/bold] ").strip()
+        if reply:
+            answers.append(f"Q: {gap['question']}\nA: {reply}")
+        console.print()
+
+    if not answers:
+        return ""
+
+    return "\n\n**Additional context provided by the user:**\n" + "\n".join(answers)
 
 
 def _print_table(rows: list[dict]):
