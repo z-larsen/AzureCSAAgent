@@ -88,10 +88,7 @@ def _get_openai_client():
         return OpenAI(api_key=openai_key), "gpt-4o"
 
     else:
-        console.print("[yellow]No LLM backend configured.[/yellow]")
-        console.print("[dim]Set AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_DEPLOYMENT (uses DefaultAzureCredential)[/dim]")
-        console.print("[dim]  or AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY[/dim]")
-        console.print("[dim]  or OPENAI_API_KEY[/dim]")
+        console.print("[yellow]No LLM backend configured. Run [bold]azure-csa[/bold] for setup instructions.[/yellow]")
         return None, None
 
 

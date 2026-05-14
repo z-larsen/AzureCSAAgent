@@ -11,7 +11,7 @@ console = Console()
 try:
     __version__ = pkg_version("azure-csa-agent")
 except Exception:
-    __version__ = "1.0.1"
+    __version__ = "1.0.2"
 
 BANNER = r"""
 [bold cyan] █████╗ ███████╗██╗   ██╗██████╗ ███████╗     ██████╗███████╗ █████╗ [/bold cyan]
@@ -50,6 +50,38 @@ app = typer.Typer(
 )
 
 
+def _check_llm_backend():
+    """Check for LLM env vars at startup and offer to configure if missing."""
+    import os
+
+    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+    openai_key = os.environ.get("OPENAI_API_KEY")
+
+    if endpoint or openai_key:
+        deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+        source = f"{endpoint} ({deployment})" if endpoint else "OpenAI API"
+        console.print(f"[green]\u2713 LLM backend:[/green] [dim]{source}[/dim]")
+        return
+
+    console.print("[yellow]\u26a0  No LLM backend configured.[/yellow] [dim]Natural language queries won't work without one.[/dim]")
+    console.print()
+    console.print("[bold]To enable, paste one of these into your terminal before running azure-csa:[/bold]")
+    console.print()
+    console.print("  [cyan]# Option 1: Azure OpenAI (recommended — uses your az login credentials)[/cyan]")
+    console.print('  [white]$env:AZURE_OPENAI_ENDPOINT = "https://<your-resource>.openai.azure.com"[/white]')
+    console.print('  [white]$env:AZURE_OPENAI_DEPLOYMENT = "gpt-4o"[/white]  [dim]# optional, defaults to gpt-4o[/dim]')
+    console.print()
+    console.print("  [cyan]# Option 2: Azure OpenAI with API key[/cyan]")
+    console.print('  [white]$env:AZURE_OPENAI_ENDPOINT = "https://<your-resource>.openai.azure.com"[/white]')
+    console.print('  [white]$env:AZURE_OPENAI_API_KEY = "<your-key>"[/white]')
+    console.print()
+    console.print("  [cyan]# Option 3: OpenAI directly[/cyan]")
+    console.print('  [white]$env:OPENAI_API_KEY = "<your-key>"[/white]')
+    console.print()
+    console.print("[dim]Pre-built assessments (assess command) work without an LLM.[/dim]")
+    console.print()
+
+
 @app.callback(invoke_without_command=True)
 def main(ctx: typer.Context):
     """Launch the Azure CSA agent."""
@@ -57,6 +89,7 @@ def main(ctx: typer.Context):
         return
 
     console.print(Panel(BANNER, border_style="cyan", padding=(0, 2)))
+    _check_llm_backend()
     console.print(HELP_TEXT)
 
     while True:
