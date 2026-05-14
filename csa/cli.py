@@ -1,20 +1,33 @@
 """CLI entrypoint for the Azure CSA agent."""
 
+from importlib.metadata import version as pkg_version
+
 import typer
 from rich.console import Console
 from rich.panel import Panel
 
 console = Console()
 
-BANNER = r"""
-[bold cyan] █████╗ ███████╗██╗   ██╗██████╗ ███████╗[/bold cyan]
-[bold cyan]██╔══██╗╚══███╔╝██║   ██║██╔══██╗██╔════╝[/bold cyan]
-[bold cyan]███████║  ███╔╝ ██║   ██║██████╔╝█████╗  [/bold cyan]
-[bold cyan]██╔══██║ ███╔╝  ██║   ██║██╔══██╗██╔══╝  [/bold cyan]
-[bold cyan]██║  ██║███████╗╚██████╔╝██║  ██║███████╗[/bold cyan]
-[bold cyan]╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝[/bold cyan]
+try:
+    __version__ = pkg_version("azure-csa-agent")
+except Exception:
+    __version__ = "1.0.0"
 
-[bold white]☁  Cloud Solution Architect Agent[/bold white]
+BANNER = r"""
+[bold cyan] █████╗ ███████╗██╗   ██╗██████╗ ███████╗     ██████╗███████╗ █████╗ [/bold cyan]
+[bold cyan]██╔══██╗╚══███╔╝██║   ██║██╔══██╗██╔════╝    ██╔════╝██╔════╝██╔══██╗[/bold cyan]
+[bold cyan]███████║  ███╔╝ ██║   ██║██████╔╝█████╗      ██║     ███████╗███████║[/bold cyan]
+[bold cyan]██╔══██║ ███╔╝  ██║   ██║██╔══██╗██╔══╝      ██║     ╚════██║██╔══██║[/bold cyan]
+[bold cyan]██║  ██║███████╗╚██████╔╝██║  ██║███████╗    ╚██████╗███████║██║  ██║[/bold cyan]
+[bold cyan]╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝     ╚═════╝╚══════╝╚═╝  ╚═╝[/bold cyan]
+[bold cyan]                 █████╗  ██████╗ ███████╗███╗   ██╗████████╗            [/bold cyan]
+[bold cyan]                ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝            [/bold cyan]
+[bold cyan]                ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║               [/bold cyan]
+[bold cyan]                ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║               [/bold cyan]
+[bold cyan]                ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║               [/bold cyan]
+[bold cyan]                ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝               [/bold cyan]
+""" + f"""
+[bold white]☁  Cloud Solution Architect Agent[/bold white]  [dim]v{__version__}[/dim]
 [dim]Advisory Only  │  25 Years Experience  │  WAF Aligned[/dim]
 """
 
