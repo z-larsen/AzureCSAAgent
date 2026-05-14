@@ -13,7 +13,7 @@ console = Console()
 try:
     __version__ = pkg_version("azure-csa-agent")
 except Exception:
-    __version__ = "1.0.6"
+    __version__ = "1.0.7"
 
 BANNER = r"""
 [bold cyan] █████╗ ███████╗██╗   ██╗██████╗ ███████╗     ██████╗███████╗ █████╗ [/bold cyan]
@@ -40,6 +40,7 @@ HELP_TEXT = """
   [green]assess <subscription-id> -t landing-zone[/green] Landing zone alignment
   [green]assess <subscription-id> -t waf[/green]         Well-Architected review
   [green]query "show untagged resources"[/green]         Natural language ARG query
+  [green]clear[/green]                                   Clear conversation history
   [green]exit[/green]                                    Quit
 
 [dim]Or just type in natural language...[/dim]
@@ -94,6 +95,8 @@ def main(ctx: typer.Context):
     _check_llm_backend()
     console.print(HELP_TEXT)
 
+    conversation_history: list[dict] = []
+
     while True:
         try:
             user_input = console.input("[bold cyan]azure-csa>[/bold cyan] ").strip()
@@ -116,12 +119,15 @@ def main(ctx: typer.Context):
         if cmd == "assess" and len(parts) > 1:
             _parse_assess(parts[1])
         elif cmd == "query" and len(parts) > 1:
-            _run_query(parts[1].strip('"').strip("'"))
+            _run_query(parts[1].strip('"').strip("'"), conversation_history)
         elif cmd in ("help", "?"):
             console.print(HELP_TEXT)
+        elif cmd == "clear":
+            conversation_history.clear()
+            console.print("[dim]Conversation history cleared.[/dim]")
         else:
             # Treat everything else as a natural language query
-            _run_query(user_input)
+            _run_query(user_input, conversation_history)
 
 
 def _parse_assess(args_str: str):
@@ -148,11 +154,14 @@ def _parse_assess(args_str: str):
     run_assessment(scope=scope, assessment_type=assessment_type, output_dir=output_dir, tee=True)
 
 
-def _run_query(question: str):
+def _run_query(question: str, history: list[dict] | None = None):
     """Run a natural language query."""
     from csa.arg_client import ask
 
-    ask(question)
+    summary = ask(question, history)
+    if history is not None and summary:
+        history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": summary})
 
 
 @app.command()

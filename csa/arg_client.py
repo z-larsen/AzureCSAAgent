@@ -180,17 +180,26 @@ def _extract_queries(response: str) -> list[dict]:
     return queries
 
 
-def ask(question: str):
-    """Convert a natural language question to an ARG query, execute it, and provide CSA analysis."""
+def ask(question: str, history: list[dict] | None = None) -> str | None:
+    """Convert a natural language question to an ARG query, execute it, and provide CSA analysis.
+
+    Args:
+        question: Natural language question about Azure resources.
+        history: Conversation history (list of role/content dicts) for follow-up context.
+
+    Returns:
+        A brief summary of what was found (for appending to history), or None.
+    """
     tracker = StepTracker("query")
+    history = history or []
 
     console.print(f"\n[bold cyan]Question:[/bold cyan] {question}")
 
     # Generate KQL from natural language
     tracker.started("kql-generation")
-    kql_response = _generate_kql(question)
+    kql_response = _generate_kql(question, history)
     if not kql_response:
-        return
+        return None
     tracker.progress("LLM generated KQL")
     tracker.done("kql-generation")
 
@@ -239,16 +248,23 @@ def ask(question: str):
                 console.print(f"  [yellow]⚠[/yellow] {q['title']} — no results")
 
         # Consolidated analysis across all results
+        analysis_text = None
         if all_results:
             console.print()
             tracker.started("csa-analysis")
             tracker.status("running consolidated CSA analysis")
-            _analyze_multi_results(question, all_results)
+            analysis_text = _analyze_multi_results(question, all_results, history)
             tracker.progress("analysis complete")
             tracker.done("csa-analysis")
 
         tracker.summary()
-        return
+        # Build history summary
+        titles = [q["title"] for q in queries]
+        summary = f"Ran {len(queries)} queries: {', '.join(titles)}."
+        if analysis_text:
+            # Keep first 500 chars of analysis for context
+            summary += f" Analysis: {analysis_text[:500]}"
+        return summary
 
     # Single-query response — original flow
     kql = kql_response
@@ -262,8 +278,12 @@ def ask(question: str):
         console.print("[dim]Skipped.[/dim]")
         return
 
-    _execute_and_analyze(question, kql, tracker)
+    analysis_text = _execute_and_analyze(question, kql, tracker, history)
     tracker.summary()
+    summary = f"Queried Azure with KQL. "
+    if analysis_text:
+        summary += f"Analysis: {analysis_text[:500]}"
+    return summary
 
 
 def _execute_query_safe(question: str, kql: str, tracker: StepTracker) -> dict | None:
@@ -287,7 +307,7 @@ def _execute_query_safe(question: str, kql: str, tracker: StepTracker) -> dict |
             return None
 
 
-def _execute_and_analyze(question: str, kql: str, tracker: StepTracker):
+def _execute_and_analyze(question: str, kql: str, tracker: StepTracker, history: list[dict] | None = None) -> str | None:
     """Execute a single KQL query with auto-retry and optional CSA analysis."""
     tracker.started("arg-execute")
     try:
@@ -318,28 +338,33 @@ def _execute_and_analyze(question: str, kql: str, tracker: StepTracker):
         _print_table(result["data"])
         tracker.started("csa-analysis")
         tracker.status("running CSA analysis on results")
-        _analyze_results(question, kql, result["data"])
+        analysis_text = _analyze_results(question, kql, result["data"], history)
         tracker.progress("analysis complete")
         tracker.done("csa-analysis")
+        return analysis_text
     elif result["data"]:
         console.print(result["data"])
     else:
         console.print("[dim]No results returned.[/dim]")
+    return None
 
 
-def _generate_kql(question: str) -> str | None:
+def _generate_kql(question: str, history: list[dict] | None = None) -> str | None:
     """Use Azure OpenAI or OpenAI to generate KQL from a question."""
     client, model = _get_openai_client()
     if not client:
         return None
 
+    messages = [{"role": "system", "content": ARG_SYSTEM_PROMPT}]
+    # Include conversation history for follow-up context
+    if history:
+        messages.extend(history[-10:])  # last 10 exchanges to stay in context window
+    messages.append({"role": "user", "content": question})
+
     try:
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": ARG_SYSTEM_PROMPT},
-                {"role": "user", "content": question},
-            ],
+            messages=messages,
             temperature=0,
             max_tokens=2000,
         )
@@ -375,11 +400,11 @@ def _retry_kql(question: str, failed_kql: str, error_msg: str) -> str | None:
         return None
 
 
-def _analyze_results(question: str, kql: str, data: list[dict]):
+def _analyze_results(question: str, kql: str, data: list[dict], history: list[dict] | None = None) -> str | None:
     """Run a second LLM pass to analyze ARG results with CSA expertise."""
     client, model = _get_openai_client()
     if not client:
-        return
+        return None
 
     # Truncate data for context window — send up to 30 rows
     sample = data[:30]
@@ -404,13 +429,15 @@ Analyze these results and provide your CSA assessment."""
     console.print()
     console.print(Panel.fit("[bold magenta]CSA Analysis[/bold magenta]", border_style="magenta"))
 
+    messages = [{"role": "system", "content": ANALYSIS_SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history[-6:])  # recent context for follow-ups
+    messages.append({"role": "user", "content": user_msg})
+
     try:
         stream = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
+            messages=messages,
             temperature=0.3,
             max_tokens=1500,
             stream=True,
@@ -429,15 +456,17 @@ Analyze these results and provide your CSA assessment."""
         console.print(Markdown(full_text))
         console.print()
         token_session.record(usage, model, "CSA analysis")
+        return full_text
     except Exception as e:
         console.print(f"[red]Analysis error: {e}[/red]")
+        return None
 
 
-def _analyze_multi_results(question: str, results: list[dict]):
+def _analyze_multi_results(question: str, results: list[dict], history: list[dict] | None = None) -> str | None:
     """Run a single consolidated LLM analysis across multiple query results."""
     client, model = _get_openai_client()
     if not client:
-        return
+        return None
 
     # Build a combined data summary — limit each query to 15 rows to fit context
     sections = []
@@ -472,13 +501,15 @@ Be direct and actionable. Reference specific resources by name from the results.
     console.print()
     console.print(Panel.fit("[bold magenta]Consolidated CSA Analysis[/bold magenta]", border_style="magenta"))
 
+    messages = [{"role": "system", "content": ANALYSIS_SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history[-6:])
+    messages.append({"role": "user", "content": user_msg})
+
     try:
         stream = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
+            messages=messages,
             temperature=0.3,
             max_tokens=3000,
             stream=True,
@@ -496,8 +527,10 @@ Be direct and actionable. Reference specific resources by name from the results.
         console.print(Markdown(full_text))
         console.print()
         token_session.record(usage, model, "Consolidated analysis")
+        return full_text
     except Exception as e:
         console.print(f"[red]Analysis error: {e}[/red]")
+        return None
 
 
 def _print_table(rows: list[dict]):
