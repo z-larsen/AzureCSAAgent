@@ -1,12 +1,468 @@
 """Assessment runner — orchestrates advisory assessments by type."""
 
 from pathlib import Path
+from datetime import datetime, timezone
 
 from rich.console import Console
 
 from csa.arg_client import execute_query
 
 console = Console()
+
+
+def _rows(results: dict, key: str) -> list:
+    """Safely get data rows from a query result."""
+    entry = results.get(key, {})
+    if "error" in entry or not isinstance(entry.get("data"), list):
+        return []
+    return entry["data"]
+
+
+def _count(results: dict, key: str) -> int:
+    """Safely get row count from a query result."""
+    entry = results.get(key, {})
+    if "error" in entry:
+        return 0
+    return entry.get("count", 0)
+
+
+# ── Network Analysis Engine ───────────────────────────────────────
+
+HIGH_RISK_PORTS = {"3389", "22", "445", "1433", "1434", "3306", "5432", "27017", "9200", "6379", "23", "21"}
+
+LEARN_URLS = {
+    "nsg_best_practices": "https://learn.microsoft.com/azure/virtual-network/network-security-group-how-it-works",
+    "nsg_rules": "https://learn.microsoft.com/azure/virtual-network/manage-network-security-group#work-with-security-rules",
+    "udr": "https://learn.microsoft.com/azure/virtual-network/virtual-networks-udr-overview",
+    "private_endpoints": "https://learn.microsoft.com/azure/private-link/private-endpoint-overview",
+    "private_dns": "https://learn.microsoft.com/azure/dns/private-dns-overview",
+    "ddos": "https://learn.microsoft.com/azure/ddos-protection/ddos-protection-overview",
+    "bastion": "https://learn.microsoft.com/azure/bastion/bastion-overview",
+    "firewall": "https://learn.microsoft.com/azure/firewall/overview",
+    "firewall_policy": "https://learn.microsoft.com/azure/firewall/policy-rule-sets",
+    "expressroute_redundancy": "https://learn.microsoft.com/azure/expressroute/designing-for-high-availability-with-expressroute",
+    "vpn_active_active": "https://learn.microsoft.com/azure/vpn-gateway/vpn-gateway-highlyavailable",
+    "hub_spoke": "https://learn.microsoft.com/azure/architecture/networking/architecture/hub-spoke",
+    "vwan": "https://learn.microsoft.com/azure/virtual-wan/virtual-wan-about",
+    "lb_basic_retirement": "https://learn.microsoft.com/azure/load-balancer/load-balancer-basic-upgrade-guidance",
+    "pip_basic_retirement": "https://learn.microsoft.com/azure/virtual-network/ip-services/public-ip-basic-upgrade-guidance",
+    "appgw_waf": "https://learn.microsoft.com/azure/web-application-firewall/ag/ag-overview",
+    "nat_gateway": "https://learn.microsoft.com/azure/nat-gateway/nat-overview",
+    "network_watcher": "https://learn.microsoft.com/azure/network-watcher/network-watcher-overview",
+    "ip_planning": "https://learn.microsoft.com/azure/cloud-adoption-framework/ready/azure-best-practices/plan-for-ip-addressing",
+    "vnet_peering": "https://learn.microsoft.com/azure/virtual-network/virtual-network-peering-overview",
+    "front_door": "https://learn.microsoft.com/azure/frontdoor/front-door-overview",
+    "traffic_manager": "https://learn.microsoft.com/azure/traffic-manager/traffic-manager-overview",
+    "dns_private_resolver": "https://learn.microsoft.com/azure/dns/dns-private-resolver-overview",
+    "forced_tunneling": "https://learn.microsoft.com/azure/vpn-gateway/about-forced-tunneling",
+    "service_endpoints": "https://learn.microsoft.com/azure/virtual-network/virtual-network-service-endpoints-overview",
+}
+
+
+def _analyze_network(results: dict) -> list[dict]:
+    """Analyze network query results and return structured findings."""
+    findings = []
+
+    def add(severity, category, title, detail, recommendation, learn_key=None):
+        finding = {
+            "severity": severity,
+            "category": category,
+            "title": title,
+            "detail": detail,
+            "recommendation": recommendation,
+        }
+        if learn_key and learn_key in LEARN_URLS:
+            finding["reference"] = LEARN_URLS[learn_key]
+        findings.append(finding)
+
+    # ── Topology Detection ────────────────────────────────────
+    has_firewall = _count(results, "firewalls") > 0
+    has_vwan = _count(results, "virtual_wan") > 0
+    has_peerings = _count(results, "vnet_peerings") > 0
+    has_vpn = _count(results, "vpn_gateways") > 0
+    has_er = _count(results, "expressroute_circuits") > 0
+
+    vnet_count = 0
+    vnet_rows = _rows(results, "vnet_details")
+    if vnet_rows:
+        vnet_names = set()
+        for r in vnet_rows:
+            vnet_names.add(r.get("vnetName", ""))
+        vnet_count = len(vnet_names)
+
+    if has_vwan:
+        topology = "Virtual WAN"
+    elif has_firewall and has_peerings:
+        topology = "Hub-Spoke (with Azure Firewall)"
+    elif has_peerings:
+        topology = "Hub-Spoke (no central firewall detected)"
+    elif vnet_count > 1:
+        topology = "Multiple isolated VNets (no peering)"
+    elif vnet_count == 1:
+        topology = "Single VNet"
+    else:
+        topology = "No VNets detected"
+
+    add("Info", "Topology", f"Network topology: {topology}",
+        f"Detected {vnet_count} VNet(s), {_count(results, 'vnet_peerings')} peering(s), "
+        f"{'Azure Firewall present' if has_firewall else 'no Azure Firewall'}, "
+        f"{'vWAN deployed' if has_vwan else 'no vWAN'}.",
+        "Review the detected topology against your target architecture.",
+        "hub_spoke" if not has_vwan else "vwan")
+
+    # No central firewall in multi-VNet environment
+    if vnet_count > 1 and not has_firewall and not has_vwan:
+        add("High", "Routing", "No central firewall or NVA detected",
+            f"{vnet_count} VNets with peering but no Azure Firewall for centralized traffic inspection.",
+            "Deploy Azure Firewall (or a third-party NVA) in the hub VNet for east-west and north-south traffic inspection. "
+            "Route all traffic through the firewall using UDRs with 0.0.0.0/0 → NVA next-hop.",
+            "firewall")
+
+    # ── NSG: Overly Permissive Rules ──────────────────────────
+    permissive_rules = _rows(results, "nsg_any_rules")
+    if permissive_rules:
+        high_risk = []
+        for rule in permissive_rules:
+            port = str(rule.get("destinationPort", rule.get("destinationPortRange", "")))
+            if port in HIGH_RISK_PORTS or port == "*":
+                high_risk.append(rule)
+
+        if high_risk:
+            names = ", ".join(set(f"{r.get('name', '?')}/{r.get('ruleName', '?')}" for r in high_risk[:5]))
+            add("Critical", "Security", f"{len(high_risk)} NSG rule(s) expose high-risk ports to the internet",
+                f"Rules allowing inbound 0.0.0.0/0 to high-risk ports (RDP, SSH, SQL, SMB, etc.): {names}",
+                "Remove or scope these rules to specific source IP ranges immediately. Use Azure Bastion for remote access instead of exposing RDP/SSH.",
+                "nsg_best_practices")
+
+        non_high_risk = [r for r in permissive_rules if r not in high_risk]
+        if non_high_risk:
+            add("High", "Security", f"{len(non_high_risk)} NSG rule(s) allow inbound from any source",
+                f"Rules with sourceAddressPrefix '*' allowing inbound traffic on non-management ports.",
+                "Review each rule and restrict source addresses to known IP ranges or service tags.",
+                "nsg_rules")
+
+    # ── NSG: Subnets without NSG ──────────────────────────────
+    no_nsg = _rows(results, "subnets_without_nsg")
+    if no_nsg:
+        subnet_list = ", ".join(f"{r.get('vnetName', '?')}/{r.get('subnetName', '?')}" for r in no_nsg[:8])
+        add("High", "Security", f"{len(no_nsg)} workload subnet(s) have no NSG attached",
+            f"Subnets without network security groups: {subnet_list}{'...' if len(no_nsg) > 8 else ''}",
+            "Attach an NSG to every workload subnet. NSGs provide the first layer of network security. "
+            "Even a default-deny NSG is better than no NSG.",
+            "nsg_best_practices")
+
+    # ── NSG: Unassociated ─────────────────────────────────────
+    orphan_nsgs = _rows(results, "nsgs_unassociated")
+    if orphan_nsgs:
+        add("Low", "Hygiene", f"{len(orphan_nsgs)} NSG(s) not attached to any subnet or NIC",
+            f"Unassociated NSGs: {', '.join(r.get('name', '?') for r in orphan_nsgs[:5])}",
+            "Review and delete unused NSGs to reduce clutter and avoid confusion during troubleshooting.",
+            "nsg_best_practices")
+
+    # ── Routing: Subnets without Route Table ──────────────────
+    no_rt = _rows(results, "subnets_without_route_table")
+    if no_rt and has_firewall:
+        subnet_list = ", ".join(f"{r.get('vnetName', '?')}/{r.get('subnetName', '?')}" for r in no_rt[:8])
+        add("High", "Routing", f"{len(no_rt)} subnet(s) have no route table (forced tunneling gap)",
+            f"Subnets using default system routes despite a firewall being present: {subnet_list}{'...' if len(no_rt) > 8 else ''}",
+            "Attach a UDR with 0.0.0.0/0 → Virtual Appliance (firewall IP) to force all internet-bound traffic through the firewall. "
+            "Without this, traffic bypasses the firewall via default system routes.",
+            "forced_tunneling")
+    elif no_rt:
+        add("Medium", "Routing", f"{len(no_rt)} subnet(s) have no route table",
+            f"Subnets using only default system routes: {', '.join(r.get('subnetName', '?') for r in no_rt[:8])}",
+            "Consider whether custom routes are needed for traffic inspection, forced tunneling, or NVA integration.",
+            "udr")
+
+    # ── Routing: BGP propagation disabled ─────────────────────
+    route_tables = _rows(results, "route_tables")
+    bgp_disabled = [r for r in route_tables if r.get("disableBgp") is True]
+    if bgp_disabled and (has_vpn or has_er):
+        add("Medium", "Routing", f"{len(bgp_disabled)} route table(s) have BGP propagation disabled",
+            f"Route tables with disableBgpRoutePropagation=true: {', '.join(r.get('name', '?') for r in bgp_disabled[:5])}. "
+            f"This prevents VPN/ExpressRoute learned routes from being injected into these subnets.",
+            "Verify this is intentional. If subnets need connectivity to on-premises via VPN/ExpressRoute, "
+            "enable BGP propagation. Common in forced-tunneling scenarios where you only want UDR routes.",
+            "udr")
+
+    # ── Public Exposure ───────────────────────────────────────
+    pip_rows = _rows(results, "public_ip_details")
+    if pip_rows:
+        unattached = [r for r in pip_rows if not r.get("attached")]
+        basic_pips = [r for r in pip_rows if str(r.get("sku", "")).lower() == "basic"]
+        no_ddos = [r for r in pip_rows if r.get("attached") and not r.get("ddosProtection")]
+
+        if unattached:
+            add("Medium", "Hygiene", f"{len(unattached)} unattached public IP(s)",
+                f"Public IPs not associated with any resource: {', '.join(r.get('name', '?') for r in unattached[:5])}",
+                "Delete unattached public IPs to reduce attack surface and cost (~$3.65/month each).",
+                "ddos")
+
+        if basic_pips:
+            add("High", "Security", f"{len(basic_pips)} Basic SKU public IP(s) detected",
+                f"Basic SKU public IPs: {', '.join(r.get('name', '?') for r in basic_pips[:5])}. "
+                "Basic SKU is being retired and lacks zone redundancy and DDoS integration.",
+                "Upgrade all Basic SKU public IPs to Standard SKU. Basic SKU retirement is underway.",
+                "pip_basic_retirement")
+
+        if no_ddos and len(pip_rows) > 0:
+            add("Medium", "Security", f"{len(no_ddos)} public IP(s) without DDoS protection",
+                "Public IPs attached to resources but without DDoS Protection enabled.",
+                "Enable Azure DDoS Protection on VNets with internet-facing workloads.",
+                "ddos")
+
+    # ── NICs with direct public IPs ───────────────────────────
+    direct_pip = _rows(results, "nics_with_public_ip")
+    if direct_pip:
+        add("High", "Security", f"{len(direct_pip)} VM NIC(s) have direct public IPs",
+            f"VMs directly exposed to the internet via NIC public IP. "
+            f"NICs: {', '.join(r.get('nicName', '?') for r in direct_pip[:5])}",
+            "Remove public IPs from VM NICs. Use Azure Bastion for management access, "
+            "Load Balancer or Application Gateway for application traffic.",
+            "bastion")
+
+    # ── Load Balancers ────────────────────────────────────────
+    lbs = _rows(results, "load_balancers")
+    basic_lbs = [r for r in lbs if str(r.get("sku", "")).lower() == "basic"]
+    if basic_lbs:
+        add("Critical", "Security", f"{len(basic_lbs)} Basic SKU Load Balancer(s) detected",
+            f"Basic Load Balancers: {', '.join(r.get('name', '?') for r in basic_lbs)}. "
+            "Basic SKU is being retired, has no SLA, no zone redundancy, and no NSG enforcement on backend pools.",
+            "Upgrade to Standard SKU Load Balancer immediately. Basic LB retirement deadline is approaching.",
+            "lb_basic_retirement")
+
+    # ── Application Gateway / WAF ─────────────────────────────
+    appgws = _rows(results, "application_gateways")
+    no_waf = [r for r in appgws if not r.get("wafEnabled")]
+    if no_waf:
+        add("High", "Security", f"{len(no_waf)} Application Gateway(s) without WAF enabled",
+            f"Application Gateways not running WAF: {', '.join(r.get('name', '?') for r in no_waf[:5])}",
+            "Enable WAF v2 on internet-facing Application Gateways to protect against OWASP Top 10 attacks.",
+            "appgw_waf")
+
+    # ── Firewall Configuration ────────────────────────────────
+    fw_policies = _rows(results, "firewall_policies")
+    alert_only = [r for r in fw_policies if str(r.get("threatIntelMode", "")).lower() == "alert"]
+    if alert_only:
+        add("Medium", "Security", f"{len(alert_only)} firewall policy(ies) with threat intel in Alert-only mode",
+            f"Policies: {', '.join(r.get('name', '?') for r in alert_only[:5])}. "
+            "Alert mode logs known malicious traffic but does not block it.",
+            "Set threat intelligence mode to 'Deny' to actively block traffic from known malicious IPs and FQDNs.",
+            "firewall_policy")
+
+    no_dns_proxy = [r for r in fw_policies if not r.get("dnsProxy")]
+    if no_dns_proxy and fw_policies:
+        add("Medium", "DNS", f"{len(no_dns_proxy)} firewall policy(ies) without DNS proxy enabled",
+            "DNS proxy must be enabled on Azure Firewall for FQDN-based network rules and private endpoint DNS resolution through the firewall.",
+            "Enable DNS proxy on firewall policies. This is required for FQDN filtering in network rules "
+            "and for proper DNS resolution when private endpoints are accessed through the firewall.",
+            "firewall_policy")
+
+    # ── Hybrid Connectivity Redundancy ────────────────────────
+    vpn_gws = _rows(results, "vpn_gateways")
+    single_vpn = [r for r in vpn_gws if not r.get("activeActive")]
+    if single_vpn:
+        add("High", "Reliability", f"{len(single_vpn)} VPN Gateway(s) not in active-active mode",
+            f"VPN Gateways in active-standby: {', '.join(r.get('name', '?') for r in single_vpn[:5])}. "
+            "Active-standby means a single tunnel failure causes an outage during failover (~10-30 seconds).",
+            "Enable active-active mode for production VPN Gateways to eliminate single points of failure.",
+            "vpn_active_active")
+
+    er_circuits = _rows(results, "expressroute_circuits")
+    if len(er_circuits) == 1:
+        c = er_circuits[0]
+        add("High", "Reliability", "Single ExpressRoute circuit (no redundancy)",
+            f"Only one ExpressRoute circuit detected: {c.get('name', '?')} "
+            f"({c.get('serviceProvider', '?')} / {c.get('peeringLocation', '?')} / {c.get('bandwidthMbps', '?')} Mbps). "
+            "A single circuit is a single point of failure for hybrid connectivity.",
+            "Deploy a second ExpressRoute circuit in a different peering location for disaster recovery. "
+            "Consider ExpressRoute + VPN as backup if a second circuit is not feasible.",
+            "expressroute_redundancy")
+
+    # ── Private Connectivity ──────────────────────────────────
+    pe_rows = _rows(results, "private_endpoint_details")
+    if pe_rows:
+        failed = [r for r in pe_rows if str(r.get("connectionState", "")).lower() not in ("approved", "")]
+        if failed:
+            add("High", "Connectivity", f"{len(failed)} private endpoint(s) not in Approved state",
+                f"Private endpoints with connection issues: {', '.join(r.get('name', '?') for r in failed[:5])}",
+                "Review and approve pending private endpoint connections. Rejected or disconnected endpoints cannot route traffic.",
+                "private_endpoints")
+
+    # ── Private DNS ───────────────────────────────────────────
+    pdns = _rows(results, "private_dns_zones")
+    pdns_links = _rows(results, "private_dns_vnet_links")
+    if pe_rows and not pdns:
+        add("High", "DNS", "Private endpoints exist but no Private DNS Zones found",
+            f"{len(pe_rows)} private endpoint(s) deployed without corresponding Private DNS Zones. "
+            "DNS resolution will fail unless custom DNS is configured.",
+            "Create Private DNS Zones for each private endpoint service (e.g., privatelink.blob.core.windows.net) "
+            "and link them to VNets that need to resolve private endpoint addresses.",
+            "private_dns")
+    elif pdns and not pdns_links:
+        add("High", "DNS", "Private DNS Zones exist but no VNet links found",
+            "Private DNS Zones are created but not linked to any VNet. DNS queries from VNets will not use these zones.",
+            "Link Private DNS Zones to all VNets that need private endpoint resolution.",
+            "private_dns")
+
+    # ── IP Address Overlap ────────────────────────────────────
+    ip_rows = _rows(results, "ip_address_overlap")
+    if len(ip_rows) > 1:
+        seen_prefixes = {}
+        overlaps = []
+        for r in ip_rows:
+            prefix = r.get("addressPrefix", "")
+            vnet = r.get("vnetName", "")
+            if prefix in seen_prefixes:
+                overlaps.append((prefix, seen_prefixes[prefix], vnet))
+            seen_prefixes[prefix] = vnet
+
+        if overlaps:
+            detail_parts = [f"{p} used by {v1} and {v2}" for p, v1, v2 in overlaps[:5]]
+            add("Critical", "IP Planning", f"{len(overlaps)} IP address space overlap(s) detected",
+                f"Overlapping address prefixes: {'; '.join(detail_parts)}. "
+                "Overlapping address spaces prevent VNet peering and VPN connectivity.",
+                "Re-address one of the overlapping VNets. Plan IP address spaces using a centralized IPAM strategy "
+                "to prevent future conflicts.",
+                "ip_planning")
+
+    # ── DDoS Plan Coverage ────────────────────────────────────
+    ddos = _rows(results, "ddos_plans")
+    if not ddos and pip_rows:
+        attached_pips = [r for r in pip_rows if r.get("attached")]
+        if attached_pips:
+            add("Medium", "Security", "No DDoS Protection Plan found",
+                f"{len(attached_pips)} public IP(s) in use without an Azure DDoS Protection Plan.",
+                "Deploy Azure DDoS Network Protection on VNets with internet-facing workloads. "
+                "Note: DDoS Protection costs ~$2,944/month but covers up to 100 public IPs.",
+                "ddos")
+
+    # ── Bastion ───────────────────────────────────────────────
+    bastions = _rows(results, "bastion_hosts")
+    if not bastions and direct_pip:
+        add("High", "Security", "No Azure Bastion deployed but VMs have direct public IPs",
+            "VMs are exposed to the internet for remote access without Bastion as a secure alternative.",
+            "Deploy Azure Bastion to eliminate the need for public IPs on VMs. "
+            "Bastion provides secure RDP/SSH through the Azure portal without exposing management ports.",
+            "bastion")
+
+    # ── Network Watcher ───────────────────────────────────────
+    watchers = _rows(results, "network_watchers")
+    watcher_regions = set(r.get("location", "") for r in watchers)
+    resource_regions = set()
+    for r in _rows(results, "vnet_details"):
+        resource_regions.add(r.get("location", ""))
+    missing_regions = resource_regions - watcher_regions
+    if missing_regions:
+        add("Low", "Observability", f"Network Watcher missing in {len(missing_regions)} region(s)",
+            f"Regions with VNets but no Network Watcher: {', '.join(sorted(missing_regions))}",
+            "Enable Network Watcher in all regions with network resources. Required for NSG flow logs, "
+            "connection troubleshoot, IP flow verify, next hop, and packet capture.",
+            "network_watcher")
+
+    # ── NAT Gateway ───────────────────────────────────────────
+    nats = _rows(results, "nat_gateways")
+    if not nats and vnet_count > 0 and not has_firewall:
+        add("Medium", "Connectivity", "No NAT Gateway and no Azure Firewall for outbound",
+            "Workloads rely on default outbound access for internet connectivity. "
+            "Azure is retiring default outbound access for new VMs.",
+            "Deploy NAT Gateway on subnets that need outbound internet access, "
+            "or route through Azure Firewall for centralized outbound control.",
+            "nat_gateway")
+
+    # ── vWAN Hub Routing State ────────────────────────────────
+    vwan_hubs = _rows(results, "virtual_wan_hubs")
+    failed_hubs = [h for h in vwan_hubs if str(h.get("routingState", "")).lower() not in ("provisioned", "")]
+    if failed_hubs:
+        add("Critical", "Routing", f"{len(failed_hubs)} vWAN Hub(s) with routing issues",
+            f"Hubs not in 'Provisioned' routing state: {', '.join(h.get('name', '?') for h in failed_hubs)}",
+            "Investigate vWAN Hub routing failures. This will affect all connected VNets and branches.",
+            "vwan")
+
+    # ── VNet Peering State ────────────────────────────────────
+    peerings = _rows(results, "vnet_peerings")
+    disconnected = [p for p in peerings if str(p.get("peerState", "")).lower() != "connected"]
+    if disconnected:
+        names = ", ".join(f"{p.get('vnetName', '?')}/{p.get('peeringName', '?')}" for p in disconnected[:5])
+        add("Critical", "Connectivity", f"{len(disconnected)} VNet peering(s) not in Connected state",
+            f"Disconnected peerings: {names}. Traffic between these VNets is blocked.",
+            "Peerings must be created on both sides and both must show 'Connected'. "
+            "Delete and recreate the peering if it is stuck in 'Disconnected' or 'Initiated' state.",
+            "vnet_peering")
+
+    # Sort by severity
+    severity_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
+    findings.sort(key=lambda f: severity_order.get(f["severity"], 5))
+
+    return findings
+
+
+def _format_findings_md(findings: list[dict]) -> str:
+    """Format findings as markdown for the report."""
+    if not findings:
+        return "\n## Analysis\n\nNo significant findings detected.\n"
+
+    lines = ["\n## Network Analysis & Recommendations\n"]
+
+    # Summary counts
+    counts = {}
+    for f in findings:
+        counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+    summary_parts = []
+    for sev in ["Critical", "High", "Medium", "Low", "Info"]:
+        if sev in counts:
+            summary_parts.append(f"**{sev}:** {counts[sev]}")
+    lines.append("| " + " | ".join(summary_parts) + " |\n")
+
+    current_severity = None
+    for f in findings:
+        if f["severity"] != current_severity:
+            current_severity = f["severity"]
+            icon = {"Critical": "🔴", "High": "🟠", "Medium": "🟡", "Low": "🔵", "Info": "ℹ️"}.get(current_severity, "")
+            lines.append(f"\n### {icon} {current_severity}\n")
+
+        lines.append(f"#### [{f['category']}] {f['title']}\n")
+        lines.append(f"**Finding:** {f['detail']}\n")
+        lines.append(f"**Recommendation:** {f['recommendation']}\n")
+        if "reference" in f:
+            lines.append(f"**Reference:** [{f['reference']}]({f['reference']})\n")
+
+    return "\n".join(lines)
+
+
+def _format_findings_console(findings: list[dict]):
+    """Print findings to the console with rich formatting."""
+    if not findings:
+        console.print("\n  [green]No significant findings detected.[/green]\n")
+        return
+
+    console.print()
+    console.rule("[bold cyan]Network Analysis & Recommendations[/bold cyan]")
+    console.print()
+
+    counts = {}
+    for f in findings:
+        counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+    summary = "  "
+    for sev, color in [("Critical", "red"), ("High", "dark_orange"), ("Medium", "yellow"), ("Low", "blue"), ("Info", "dim")]:
+        if sev in counts:
+            summary += f"[{color}]{sev}: {counts[sev]}[/{color}]  "
+    console.print(summary)
+    console.print()
+
+    current_severity = None
+    for f in findings:
+        if f["severity"] != current_severity:
+            current_severity = f["severity"]
+            color = {"Critical": "red", "High": "dark_orange", "Medium": "yellow", "Low": "blue", "Info": "dim"}.get(current_severity, "white")
+            console.print(f"  [bold {color}]── {current_severity} ──[/bold {color}]")
+
+        console.print(f"    [bold][{f['category']}][/bold] {f['title']}")
+        console.print(f"    [dim]Finding:[/dim] {f['detail']}")
+        console.print(f"    [green]Recommendation:[/green] {f['recommendation']}")
+        if "reference" in f:
+            console.print(f"    [blue]Ref:[/blue] {f['reference']}")
+        console.print()
 
 # Common ARG queries used across assessments
 QUERIES = {
@@ -533,12 +989,26 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
 
     # Write results to output
     console.print(f"\n[dim]📝 Generating report...[/dim]")
+
+    # Run analysis for network assessments
+    findings = []
+    if assessment_type == "network":
+        console.print(f"[dim]📊 Analyzing results against best practices...[/dim]")
+        findings = _analyze_network(results)
+
     out_path = Path(output_dir) / f"{assessment_type}-assessment.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     report_lines = []
     report_lines.append(f"# Azure CSA Assessment — {assessment_type.title()}\n")
     report_lines.append(f"**Scope:** `{scope}`\n")
+    report_lines.append(f"**Date:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n")
+
+    # Add findings section before raw data for network assessments
+    if findings:
+        report_lines.append(_format_findings_md(findings))
+        report_lines.append("\n---\n")
+        report_lines.append("## Raw Query Data\n")
 
     for name, data in results.items():
         section_title = name.replace('_', ' ').title()
@@ -555,6 +1025,10 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
         f.write(report_text)
 
     if tee:
+        # Print analysis findings first for network assessments
+        if findings:
+            _format_findings_console(findings)
+
         console.print()
         console.rule(f"[bold cyan]{assessment_type.title()} Assessment Results[/bold cyan]")
         console.print()
