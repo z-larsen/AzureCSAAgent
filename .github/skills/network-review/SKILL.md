@@ -84,25 +84,77 @@ Deep-dive Azure networking assessment covering topology, connectivity, security,
 - **DNS resolution chain** — Private DNS Zone → VNet link → conditional forwarder (for hybrid)
 - **Missing DNS zones for private endpoints** — private endpoints without corresponding privatelink.* DNS zones
 - **Split-brain DNS** — public and private zones for the same domain
+- **Azure DNS Private Resolver** — inbound/outbound endpoints, provisioning state, VNet placement
+- **DNS Forwarding Rulesets** — forwarding rules, target DNS servers, enabled/disabled state, domain coverage
+- **Custom DNS on VNets** — VNets using custom DNS servers vs Azure DNS, chain validation
+- **Hybrid DNS flow** — on-prem → DNS Private Resolver inbound → Azure DNS → Private DNS Zone → private endpoint IP
+- **DNS gap analysis** — Private DNS Zones not linked to all VNets, zones missing for private endpoint service types
 
-### 9. Connectivity Troubleshooting Patterns
+### 9. Observability & Traffic Visibility
+- **NSG Flow Logs** — enabled/disabled per NSG, version (v1 vs v2), retention days, storage account
+- **Traffic Analytics** — enabled on flow logs? Provides aggregated flow visualization and threat detection
+- **Flow log gaps** — NSGs without flow logs (no traffic visibility for troubleshooting or compliance)
+- **Connection Monitors** — continuous end-to-end reachability and latency monitoring, active/inactive status
+- **Network Watcher tools** — IP Flow Verify, Next Hop, Connection Troubleshoot, Packet Capture, Topology
+- **Packet Capture readiness** — Network Watcher agent extension required on VMs, recommend pre-staging for incident response
+
+### 10. Performance & Configuration Hygiene
+- **Accelerated Networking** — NICs on VMs that should have Accelerated Networking enabled but don't
+- **IP Forwarding** — NICs with IP forwarding enabled (verify they are intentional NVAs/forwarders)
+- **Subnet Delegations** — which subnets are delegated to which services (impacts what else can be deployed there)
+- **Unattached resources** — orphaned public IPs, unassociated NSGs, empty subnets
+
+### 11. PaaS Network Exposure
+- **Storage Accounts** — defaultAction=Allow (open to all networks), should use private endpoints or VNet rules
+- **Key Vaults** — no network restrictions (secrets/certs exposed to public internet)
+- **SQL Servers** — "Allow Azure services" firewall rule (0.0.0.0 → opens to ALL Azure IPs, not just your tenant)
+- **Private endpoint coverage gap** — PaaS resources accessible from the internet that should be locked down
+
+### 12. Connectivity Troubleshooting Patterns
 When a user reports connectivity issues, follow this diagnostic sequence:
 
 1. **Source to destination mapping** — identify source resource, destination resource, protocol, port
 2. **Path analysis** — trace the network path: subnet → NSG (inbound/outbound) → route table → NVA/firewall → peering/gateway → destination NSG → destination
 3. **NSG rule evaluation** — check both source and destination NSGs for allow/deny at the specific port/protocol
 4. **Route verification** — check UDRs for next-hop overrides, BGP propagation status
-5. **DNS resolution** — verify the destination resolves correctly (private DNS zone linked? conditional forwarder in place?)
+5. **DNS resolution** — verify the destination resolves correctly (private DNS zone linked? conditional forwarder in place? resolver configured?)
 6. **Firewall/NVA rules** — if traffic routes through a firewall, check application and network rule collections
 7. **Service-specific checks** — storage firewalls, Key Vault network ACLs, SQL firewall rules, App Service access restrictions
 8. **Cross-VNet** — peering state, allow forwarded traffic, allow gateway transit settings
 9. **Hybrid** — VPN tunnel status, ExpressRoute circuit state, BGP learned routes
-10. **Network Watcher** — recommend IP flow verify, next hop, connection troubleshoot, packet capture
+10. **Packet-level** — use Network Watcher Packet Capture for deep inspection, IP Flow Verify for NSG rule hits, Next Hop for routing validation
 
-### 10. Network Watcher Coverage
+### 13. Network Watcher Coverage
 - **Network Watchers** — one should exist per region where you have resources
 - Regions with resources but no Network Watcher (gap)
 - Recommend enabling connection monitor, flow logs, and Traffic Analytics
+
+## Follow-Up Questions
+
+Before concluding any network assessment, ask clarifying questions to confirm understanding:
+
+### Architecture Intent
+- "I see [hub-spoke / vWAN / flat] topology — is this the intended design, or are you migrating?"
+- "You have [N] VNets with no peering — are these intentionally isolated?"
+- "I found subnets without route tables — is forced tunneling through the firewall the goal?"
+
+### Hybrid Connectivity
+- "You have a single ExpressRoute circuit — do you have a VPN backup or is a second circuit planned?"
+- "I see custom DNS servers on VNets — are these on-premises DNS forwarders or Azure IaaS DNS VMs?"
+- "Is on-premises connectivity required for all spoke VNets, or only specific ones?"
+
+### Security Posture
+- "I found NSG rules allowing RDP from 0.0.0.0/0 — is this intentional for a specific use case, or should we lock it down?"
+- "Several PaaS resources are open to all networks — is there a migration plan to private endpoints?"
+- "No DDoS Protection Plan exists — what's the risk tolerance for internet-facing workloads?"
+
+### DNS Resolution
+- "Private endpoints exist without a DNS Private Resolver — how is on-premises resolving privatelink.* FQDNs?"
+- "Some Private DNS Zones aren't linked to all VNets — which VNets need to resolve those records?"
+
+### Operational Readiness
+- "No NSG flow logs are configured — is there another traffic monitoring solution in place?"
+- "No Connection Monitors exist — how is connectivity health being monitored today?"
 
 ## Risk Classification
 

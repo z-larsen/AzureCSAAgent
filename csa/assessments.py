@@ -56,6 +56,18 @@ LEARN_URLS = {
     "dns_private_resolver": "https://learn.microsoft.com/azure/dns/dns-private-resolver-overview",
     "forced_tunneling": "https://learn.microsoft.com/azure/vpn-gateway/about-forced-tunneling",
     "service_endpoints": "https://learn.microsoft.com/azure/virtual-network/virtual-network-service-endpoints-overview",
+    "nsg_flow_logs": "https://learn.microsoft.com/azure/network-watcher/nsg-flow-logs-overview",
+    "traffic_analytics": "https://learn.microsoft.com/azure/network-watcher/traffic-analytics",
+    "connection_monitor": "https://learn.microsoft.com/azure/network-watcher/connection-monitor-overview",
+    "accelerated_networking": "https://learn.microsoft.com/azure/virtual-network/accelerated-networking-overview",
+    "vnet_custom_dns": "https://learn.microsoft.com/azure/virtual-network/virtual-networks-name-resolution-for-vms-and-role-instances",
+    "storage_network_rules": "https://learn.microsoft.com/azure/storage/common/storage-network-security",
+    "keyvault_network": "https://learn.microsoft.com/azure/key-vault/general/network-security",
+    "vwan_routing": "https://learn.microsoft.com/azure/virtual-wan/about-virtual-hub-routing",
+    "packet_capture": "https://learn.microsoft.com/azure/network-watcher/packet-capture-overview",
+    "ip_flow_verify": "https://learn.microsoft.com/azure/network-watcher/ip-flow-verify-overview",
+    "next_hop": "https://learn.microsoft.com/azure/network-watcher/next-hop-overview",
+    "subnet_delegation": "https://learn.microsoft.com/azure/virtual-network/subnet-delegation-overview",
 }
 
 
@@ -389,6 +401,223 @@ def _analyze_network(results: dict) -> list[dict]:
             "Peerings must be created on both sides and both must show 'Connected'. "
             "Delete and recreate the peering if it is stuck in 'Disconnected' or 'Initiated' state.",
             "vnet_peering")
+
+    # ── VNet Peering: Gateway Transit / Forwarded Traffic ─────
+    for p in peerings:
+        if p.get("allowGatewayTransit") and not p.get("useRemoteGateways"):
+            pass  # hub side — expected
+        if p.get("useRemoteGateways") and not has_vpn and not has_er:
+            add("Medium", "Connectivity", f"Peering '{p.get('peeringName', '?')}' uses remote gateways but no gateway detected",
+                f"VNet {p.get('vnetName', '?')} peering has useRemoteGateways=true, "
+                "but no VPN or ExpressRoute gateway was found in the remote hub.",
+                "Verify the hub VNet has a gateway deployed. Without one, useRemoteGateways causes connectivity failures.",
+                "vnet_peering")
+
+    # ── NSG Flow Logs ─────────────────────────────────────────
+    flow_logs = _rows(results, "nsg_flow_logs")
+    all_nsgs = _rows(results, "nsg_full_rules")
+    nsg_names_with_flow = set()
+    for fl in flow_logs:
+        target = fl.get("targetNsg", "")
+        if target:
+            nsg_names_with_flow.add(target.split("/")[-1] if "/" in target else target)
+    disabled_flow = [fl for fl in flow_logs if not fl.get("enabled")]
+
+    if all_nsgs and not flow_logs:
+        nsg_count = len(set(r.get("name", "") for r in all_nsgs))
+        add("High", "Observability", f"No NSG flow logs configured ({nsg_count} NSGs present)",
+            "NSG flow logs are not enabled on any NSG. Without flow logs, you have no visibility "
+            "into allowed/denied traffic flows for troubleshooting or compliance.",
+            "Enable NSG flow logs on all NSGs. Use Version 2 for throughput data. "
+            "Enable Traffic Analytics for centralized visualization and anomaly detection.",
+            "nsg_flow_logs")
+    elif disabled_flow:
+        add("Medium", "Observability", f"{len(disabled_flow)} NSG flow log(s) are disabled",
+            f"Flow logs exist but are disabled: {', '.join(fl.get('name', '?') for fl in disabled_flow[:5])}",
+            "Re-enable disabled flow logs. Disabled flow logs provide no traffic visibility.",
+            "nsg_flow_logs")
+
+    # ── Traffic Analytics ─────────────────────────────────────
+    no_ta = [fl for fl in flow_logs if fl.get("enabled") and not fl.get("trafficAnalytics")]
+    if no_ta:
+        add("Medium", "Observability", f"{len(no_ta)} flow log(s) without Traffic Analytics",
+            "Flow logs are enabled but Traffic Analytics is not. Traffic Analytics provides "
+            "aggregated flow visualizations, threat detection, and bandwidth trending.",
+            "Enable Traffic Analytics on all flow logs for centralized network visibility.",
+            "traffic_analytics")
+
+    # ── Flow Log Version ──────────────────────────────────────
+    v1_logs = [fl for fl in flow_logs if fl.get("enabled") and str(fl.get("version", "1")) == "1"]
+    if v1_logs:
+        add("Low", "Observability", f"{len(v1_logs)} flow log(s) using Version 1 format",
+            "Version 1 flow logs lack throughput (bytes) data needed for capacity planning and billing analysis.",
+            "Upgrade to Version 2 flow logs for per-flow byte and packet counts.",
+            "nsg_flow_logs")
+
+    # ── Connection Monitor ────────────────────────────────────
+    conn_mons = _rows(results, "connection_monitors")
+    inactive_mons = [m for m in conn_mons if str(m.get("monitoringStatus", "")).lower() != "running"]
+    if inactive_mons:
+        add("Low", "Observability", f"{len(inactive_mons)} Connection Monitor(s) not running",
+            f"Monitors: {', '.join(m.get('name', '?') for m in inactive_mons[:5])}",
+            "Review and restart inactive Connection Monitors. They provide continuous reachability "
+            "and latency monitoring between endpoints.",
+            "connection_monitor")
+
+    # ── DNS: Private DNS Resolver ─────────────────────────────
+    resolvers = _rows(results, "dns_resolvers")
+    if has_vpn or has_er:
+        # Hybrid environment — resolver is important
+        if not resolvers and pdns:
+            add("High", "DNS", "No Private DNS Resolver in hybrid environment",
+                "VPN/ExpressRoute gateways detected with Private DNS Zones but no Azure DNS Private Resolver. "
+                "On-premises DNS servers cannot resolve Azure Private DNS Zone records without a resolver "
+                "or DNS forwarder in Azure.",
+                "Deploy an Azure DNS Private Resolver with inbound endpoints so on-premises DNS can forward "
+                "privatelink.* queries to Azure for resolution. Without this, on-premises clients cannot "
+                "reach private endpoints by FQDN.",
+                "dns_private_resolver")
+    if resolvers:
+        failed_resolvers = [r for r in resolvers if str(r.get("state", "")).lower() != "succeeded"]
+        if failed_resolvers:
+            add("Critical", "DNS", f"{len(failed_resolvers)} DNS Resolver(s) in failed state",
+                f"Resolvers: {', '.join(r.get('name', '?') for r in failed_resolvers)}. "
+                "A failed resolver means DNS forwarding is broken for all dependent VNets.",
+                "Investigate and reprovision the failed DNS Resolver. Check subnet delegation and NIC state.",
+                "dns_private_resolver")
+
+    # ── DNS Forwarding Rules ──────────────────────────────────
+    fwd_rules = _rows(results, "dns_forwarding_rules")
+    disabled_rules = [r for r in fwd_rules if str(r.get("state", "")).lower() == "disabled"]
+    if disabled_rules:
+        add("Medium", "DNS", f"{len(disabled_rules)} DNS forwarding rule(s) are disabled",
+            f"Disabled forwarding rules: {', '.join(r.get('ruleName', '?') for r in disabled_rules[:5])}. "
+            "DNS queries for these domains will not be forwarded to the target DNS servers.",
+            "Enable or delete disabled forwarding rules. Disabled rules can cause unexpected "
+            "DNS resolution behavior when clients expect forwarding to occur.",
+            "dns_private_resolver")
+
+    # ── Custom DNS on VNets ───────────────────────────────────
+    custom_dns = _rows(results, "vnets_custom_dns")
+    if custom_dns and resolvers:
+        add("Info", "DNS", f"{len(custom_dns)} VNet(s) using custom DNS servers alongside DNS Resolver",
+            f"VNets with custom DNS: {', '.join(r.get('name', '?') for r in custom_dns[:5])}. "
+            "When both custom DNS and Azure DNS Private Resolver are present, ensure the DNS chain is correct: "
+            "VNet custom DNS → Resolver inbound endpoint → Azure DNS.",
+            "Verify the DNS resolution chain. Custom DNS servers should conditionally forward "
+            "privatelink.* and other Azure zones to the DNS Private Resolver inbound endpoint.",
+            "vnet_custom_dns")
+    elif custom_dns and not resolvers and (has_vpn or has_er):
+        add("Medium", "DNS", f"{len(custom_dns)} VNet(s) using custom DNS (no Azure DNS Resolver)",
+            f"VNets with custom DNS pointing to on-prem or IaaS DNS: {', '.join(r.get('name', '?') for r in custom_dns[:5])}. "
+            "Without an Azure DNS Private Resolver, privatelink.* zones must be forwarded to 168.63.129.16 "
+            "from a DNS forwarder VM in Azure.",
+            "Consider migrating from IaaS DNS forwarders to Azure DNS Private Resolver for better "
+            "reliability, scalability, and lower management overhead.",
+            "dns_private_resolver")
+
+    # ── Private DNS Zone VNet Link Gaps ───────────────────────
+    if pdns_links and vnet_count > 1:
+        links_per_zone = {}
+        for link in pdns_links:
+            zone = link.get("zoneName", link.get("name", ""))
+            links_per_zone[zone] = links_per_zone.get(zone, 0) + 1
+        under_linked = {z: c for z, c in links_per_zone.items() if c < vnet_count}
+        if under_linked and len(under_linked) > 0:
+            examples = ", ".join(f"{z} ({c}/{vnet_count} VNets)" for z, c in list(under_linked.items())[:5])
+            add("Medium", "DNS", f"{len(under_linked)} Private DNS Zone(s) not linked to all VNets",
+                f"Zones with incomplete VNet links: {examples}. "
+                "VNets without links cannot resolve private endpoint FQDNs in those zones.",
+                "Link each Private DNS Zone to all VNets that need to resolve those records. "
+                "In hub-spoke, link zones to both hub and spoke VNets.",
+                "private_dns")
+
+    # ── vWAN Hub Connections ──────────────────────────────────
+    vwan_conns = _rows(results, "vwan_connections")
+    no_internet_sec = [c for c in vwan_conns if not c.get("enableInternetSecurity")]
+    if no_internet_sec and has_firewall:
+        add("High", "Security", f"{len(no_internet_sec)} vWAN connection(s) without internet security enabled",
+            f"Connections: {', '.join(c.get('connectionName', '?') for c in no_internet_sec[:5])}. "
+            "Internet security must be enabled to route internet-bound traffic through the secured hub (firewall).",
+            "Enable 'Internet Security' on all vWAN hub connections to ensure internet traffic "
+            "is inspected by the hub's Azure Firewall or security NVA.",
+            "vwan_routing")
+
+    # ── vWAN Route Table Health ───────────────────────────────
+    vwan_rts = _rows(results, "vwan_hub_route_tables")
+    failed_rts = [rt for rt in vwan_rts if str(rt.get("provisioningState", "")).lower() != "succeeded"]
+    if failed_rts:
+        add("Critical", "Routing", f"{len(failed_rts)} vWAN hub route table(s) in failed state",
+            f"Route tables: {', '.join(rt.get('tableName', '?') for rt in failed_rts)}. "
+            "Failed route tables mean traffic cannot be routed through the hub.",
+            "Investigate and reprovision failed route tables. Check for dependent resource conflicts.",
+            "vwan_routing")
+
+    # ── Accelerated Networking ────────────────────────────────
+    no_an = _rows(results, "nic_accelerated_networking")
+    if no_an:
+        add("Low", "Performance", f"{len(no_an)} NIC(s) without Accelerated Networking",
+            f"NICs attached to VMs without Accelerated Networking: {', '.join(r.get('name', '?') for r in no_an[:5])}",
+            "Enable Accelerated Networking on supported VM sizes for lower latency, reduced jitter, "
+            "and decreased CPU utilization. Most D/E/F-series VMs support it.",
+            "accelerated_networking")
+
+    # ── IP Forwarding on NICs (unexpected NVAs) ───────────────
+    ip_fwd = _rows(results, "nic_ip_forwarding")
+    if ip_fwd:
+        add("Info", "Routing", f"{len(ip_fwd)} NIC(s) with IP forwarding enabled",
+            f"NICs: {', '.join(r.get('name', '?') for r in ip_fwd[:5])}. "
+            "IP forwarding is required for NVAs, firewalls, and load balancers but should not be "
+            "enabled on regular workload NICs.",
+            "Verify each NIC with IP forwarding is intentionally acting as an NVA/forwarder. "
+            "Disable IP forwarding on NICs that are not routing traffic.",
+            "udr")
+
+    # ── PaaS Network Exposure ─────────────────────────────────
+    open_storage = _rows(results, "storage_network_rules")
+    if open_storage:
+        add("High", "Security", f"{len(open_storage)} Storage Account(s) allow access from all networks",
+            f"Storage accounts with defaultAction=Allow: {', '.join(r.get('name', '?') for r in open_storage[:5])}. "
+            "These are accessible from the public internet without network restrictions.",
+            "Set defaultAction to 'Deny' and add VNet rules, private endpoints, or IP rules for authorized access. "
+            "Use private endpoints for zero-trust network access to storage.",
+            "storage_network_rules")
+
+    open_kv = _rows(results, "keyvault_network_open")
+    if open_kv:
+        add("High", "Security", f"{len(open_kv)} Key Vault(s) allow access from all networks",
+            f"Key Vaults with no network restrictions: {', '.join(r.get('name', '?') for r in open_kv[:5])}",
+            "Restrict Key Vault network access and use private endpoints. Key Vaults contain secrets, "
+            "certificates, and keys that should not be exposed to the public internet.",
+            "keyvault_network")
+
+    open_sql = _rows(results, "sql_firewall_allow_azure")
+    if open_sql:
+        add("Medium", "Security", f"{len(open_sql)} SQL Server(s) with 'Allow Azure services' firewall rule",
+            f"SQL Servers: {', '.join(r.get('serverName', '?') for r in open_sql[:5])}. "
+            "The 0.0.0.0 rule allows any Azure service (including other tenants) to connect.",
+            "Remove the 'Allow Azure services' rule and use private endpoints or VNet service endpoints instead. "
+            "This rule opens access to ALL Azure IP addresses, not just your tenant.",
+            "service_endpoints")
+
+    # ── Network Watcher: Packet Capture / Troubleshooting Readiness ─
+    if watchers and not conn_mons:
+        add("Info", "Observability", "No Connection Monitors configured",
+            "Network Watcher is deployed but no Connection Monitors exist. Connection Monitor provides "
+            "continuous end-to-end connectivity and latency monitoring.",
+            "Set up Connection Monitors for critical paths (e.g., app tier → database, hub → spoke, "
+            "Azure → on-premises). Use for proactive alerting before users report issues.",
+            "connection_monitor")
+
+    if watchers:
+        add("Info", "Observability", "Network diagnostic tools available",
+            f"Network Watcher deployed in {len(watchers)} region(s). Available tools: "
+            "IP Flow Verify (NSG rule hit), Next Hop (routing decision), Connection Troubleshoot "
+            "(end-to-end path test), Packet Capture (deep inspection), Topology (visual map).",
+            "Use IP Flow Verify to test whether an NSG allows or denies specific traffic. "
+            "Use Next Hop to validate routing. Use Packet Capture for deep traffic inspection. "
+            "These are your primary CLI/Portal diagnostic tools — no agents required.",
+            "packet_capture")
 
     # Sort by severity
     severity_order = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Info": 4}
@@ -917,6 +1146,132 @@ QUERIES = {
         | summarize count() by type
         | order by count_ desc
     """,
+    # ── DNS Resolution & Resolver ─────────────────────────────
+    "dns_resolvers": """
+        Resources
+        | where type == 'microsoft.network/dnsresolvers'
+        | project name, resourceGroup, location,
+                  state=properties.provisioningState,
+                  vnetId=properties.virtualNetwork.id
+    """,
+    "dns_forwarding_rulesets": """
+        Resources
+        | where type == 'microsoft.network/dnsforwardingrulesets'
+        | project name, resourceGroup, location,
+                  resolverOutbound=properties.dnsResolverOutboundEndpoints
+    """,
+    "dns_forwarding_rules": """
+        Resources
+        | where type == 'microsoft.network/dnsforwardingrulesets/forwardingrules'
+        | project rulesetName=tostring(split(id, '/')[8]), ruleName=name,
+                  domain=properties.domainName,
+                  state=properties.forwardingRuleState,
+                  targetDns=properties.targetDnsServers
+    """,
+    # ── Custom DNS Configuration ──────────────────────────────
+    "vnets_custom_dns": """
+        Resources
+        | where type == 'microsoft.network/virtualnetworks'
+        | where isnotnull(properties.dhcpOptions) and array_length(properties.dhcpOptions.dnsServers) > 0
+        | project name, resourceGroup, location,
+                  dnsServers=properties.dhcpOptions.dnsServers
+    """,
+    # ── Flow Logs & Traffic Analytics ─────────────────────────
+    "nsg_flow_logs": """
+        Resources
+        | where type == 'microsoft.network/networkwatchers/flowlogs'
+        | project name, resourceGroup, location,
+                  targetNsg=properties.targetResourceId,
+                  enabled=properties.enabled,
+                  retentionDays=properties.retentionPolicy.days,
+                  retentionEnabled=properties.retentionPolicy.enabled,
+                  trafficAnalytics=properties.flowAnalyticsConfiguration.networkWatcherFlowAnalyticsConfiguration.enabled,
+                  storageAccount=properties.storageId,
+                  version=properties.format.version
+    """,
+    # ── Connection Monitor ────────────────────────────────────
+    "connection_monitors": """
+        Resources
+        | where type == 'microsoft.network/networkwatchers/connectionmonitors'
+        | project name, resourceGroup, location,
+                  monitoringStatus=properties.monitoringStatus,
+                  autoStart=properties.autoStart,
+                  endpoints=array_length(properties.endpoints),
+                  testGroups=array_length(properties.testGroups)
+    """,
+    # ── vWAN Effective Routes ─────────────────────────────────
+    "vwan_hub_route_tables": """
+        Resources
+        | where type == 'microsoft.network/virtualhubs/hubroutetables'
+        | project hubName=tostring(split(id, '/')[8]), tableName=name,
+                  resourceGroup, location,
+                  routes=array_length(properties.routes),
+                  labels=properties.labels,
+                  provisioningState=properties.provisioningState
+    """,
+    "vwan_connections": """
+        Resources
+        | where type == 'microsoft.network/virtualhubs/hubvirtualnetworkconnections'
+        | project hubName=tostring(split(id, '/')[8]), connectionName=name,
+                  resourceGroup,
+                  remoteVnet=properties.remoteVirtualNetwork.id,
+                  enableInternetSecurity=properties.enableInternetSecurity,
+                  routingConfig=properties.routingConfiguration
+    """,
+    # ── Subnet Delegation ─────────────────────────────────────
+    "subnet_delegations": """
+        Resources
+        | where type == 'microsoft.network/virtualnetworks'
+        | mv-expand subnet = properties.subnets
+        | mv-expand delegation = subnet.properties.delegations
+        | where isnotnull(delegation)
+        | project vnetName=name, subnetName=subnet.name,
+                  subnetPrefix=subnet.properties.addressPrefix,
+                  serviceName=delegation.properties.serviceName
+    """,
+    # ── NIC Effective Config ──────────────────────────────────
+    "nic_ip_forwarding": """
+        Resources
+        | where type == 'microsoft.network/networkinterfaces'
+        | where properties.enableIPForwarding == true
+        | project name, resourceGroup,
+                  vmId=properties.virtualMachine.id,
+                  ipForwarding=properties.enableIPForwarding
+    """,
+    # ── Accelerated Networking ────────────────────────────────
+    "nic_accelerated_networking": """
+        Resources
+        | where type == 'microsoft.network/networkinterfaces'
+        | where properties.enableAcceleratedNetworking != true
+        | extend vmId = tostring(properties.virtualMachine.id)
+        | where isnotempty(vmId)
+        | project name, resourceGroup,
+                  acceleratedNetworking=properties.enableAcceleratedNetworking
+    """,
+    # ── PaaS Firewall Rules (service-level network ACLs) ──────
+    "storage_network_rules": """
+        Resources
+        | where type == 'microsoft.storage/storageaccounts'
+        | where properties.networkAcls.defaultAction == 'Allow'
+        | project name, resourceGroup, location,
+                  defaultAction=properties.networkAcls.defaultAction,
+                  bypass=properties.networkAcls.bypass
+    """,
+    "sql_firewall_allow_azure": """
+        Resources
+        | where type == 'microsoft.sql/servers'
+        | mv-expand rule = properties.firewallRules
+        | where rule.properties.startIpAddress == '0.0.0.0' and rule.properties.endIpAddress == '0.0.0.0'
+        | project serverName=name, resourceGroup, ruleName=rule.name
+    """,
+    "keyvault_network_open": """
+        Resources
+        | where type == 'microsoft.keyvault/vaults'
+        | where properties.networkAcls.defaultAction == 'Allow' or isnull(properties.networkAcls.defaultAction)
+        | project name, resourceGroup, location,
+                  defaultAction=properties.networkAcls.defaultAction,
+                  publicAccess=properties.publicNetworkAccess
+    """,
 }
 
 
@@ -965,9 +1320,13 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
             "firewalls", "firewall_policies",
             "application_gateways", "load_balancers", "front_doors",
             "vpn_gateways", "expressroute_gateways", "expressroute_circuits", "expressroute_peerings",
-            "virtual_wan", "virtual_wan_hubs",
+            "virtual_wan", "virtual_wan_hubs", "vwan_hub_route_tables", "vwan_connections",
             "private_endpoint_details", "private_endpoints", "service_endpoints",
             "dns_zones", "private_dns_zones", "private_dns_vnet_links",
+            "dns_resolvers", "dns_forwarding_rulesets", "dns_forwarding_rules", "vnets_custom_dns",
+            "nsg_flow_logs", "connection_monitors",
+            "nic_ip_forwarding", "nic_accelerated_networking", "subnet_delegations",
+            "storage_network_rules", "sql_firewall_allow_azure", "keyvault_network_open",
             "bastion_hosts", "traffic_managers", "network_watchers",
         ],
         "waf": ["resource_count", "public_ips", "nsg_any_rules", "orphaned_disks", "advisor_cost",
