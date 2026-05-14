@@ -3,7 +3,7 @@
 A senior Azure Cloud Solution Architect agent that runs advisory assessments against live Azure environments using Azure Resource Graph, with optional natural language query support powered by Azure OpenAI.
 
 <p align="center">
-  <img src="assets/csaagent.png" alt="Azure CSA Agent" width="600">
+  <img src="assets/csaagent.png" alt="Azure CSA Agent CLI showing the interactive REPL with ASCII art banner, sample prompts, and rotating greeting" width="600">
 </p>
 
 ## What it does
