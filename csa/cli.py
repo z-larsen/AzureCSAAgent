@@ -41,7 +41,7 @@ HELP_TEXT = """
   [green]query "show untagged resources"[/green]         Natural language ARG query
   [green]exit[/green]                                    Quit
 
-[dim]Or just type a question in plain English.[/dim]
+[dim]Or just type in natural language...[/dim]
 """
 
 app = typer.Typer(
