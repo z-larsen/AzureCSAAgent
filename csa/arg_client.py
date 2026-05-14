@@ -41,6 +41,11 @@ General rules:
 - Use proper KQL syntax: where, extend, project, summarize, mv-expand, join
 - Always include useful columns like name, resourceGroup, location, subscriptionId
 - Limit results to 100 rows max unless the user asks for aggregations
+- In `project`, NEVER use dotted paths like `properties.x.y` directly — always `extend` an alias first, then project the alias
+  WRONG: project name, properties.addressSpace.addressPrefixes
+  RIGHT: extend vnetPrefixes = tostring(properties.addressSpace.addressPrefixes) | project name, vnetPrefixes
+- When using mv-expand on arrays, always extend aliases before project
+- Wrap dynamic/array values in tostring() when projecting them
 """
 
 ANALYSIS_SYSTEM_PROMPT = """You are a senior Azure Cloud Solution Architect with 25 years of experience.
@@ -92,6 +97,23 @@ def _get_openai_client():
         return None, None
 
 
+def _extract_error(exc: Exception) -> str:
+    """Pull a short, readable message from verbose Azure SDK exceptions."""
+    msg = str(exc)
+    # Azure errors nest "(Code) Message" patterns — grab the innermost InvalidQuery
+    if "InvalidQuery" in msg:
+        # Find the last "Query is invalid" message
+        for line in msg.split("\n"):
+            if "Query is invalid" in line:
+                return "Query is invalid. Check column names and KQL syntax."
+        return "InvalidQuery — check column names, aliases, and KQL syntax."
+    # Truncate verbose Azure error chains
+    if len(msg) > 300:
+        first_line = msg.split("\n")[0][:300]
+        return first_line
+    return msg
+
+
 def execute_query(query: str, subscriptions: list[str] | None = None) -> dict:
     """Execute an ARG query and return raw results."""
     client = get_client()
@@ -137,7 +159,7 @@ def ask(question: str):
         result = execute_query(kql)
         tracker.progress(f"query returned {result['count']} rows")
     except Exception as e:
-        error_msg = str(e)
+        error_msg = _extract_error(e)
         tracker.status("query error — attempting auto-fix")
         fixed_kql = _retry_kql(question, kql, error_msg)
         if not fixed_kql:
@@ -151,7 +173,7 @@ def ask(question: str):
             result = execute_query(kql)
             tracker.progress(f"retry returned {result['count']} rows")
         except Exception as e2:
-            console.print(f"[red]Retry also failed: {e2}[/red]")
+            console.print(f"[red]Retry also failed: {_extract_error(e2)}[/red]")
             return
 
     tracker.done("arg-execute", f"{result['count']} rows")
