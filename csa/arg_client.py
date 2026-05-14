@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.mgmt.resourcegraph import ResourceGraphClient
@@ -16,7 +17,13 @@ from csa.progress import StepTracker
 
 console = Console()
 
-ARG_SYSTEM_PROMPT = """You are an Azure Resource Graph (ARG) query expert. Given a natural language question about Azure resources, generate a valid KQL query that answers it.
+ARG_SYSTEM_PROMPT = """You are a senior Azure Cloud Solution Architect and Azure Resource Graph expert.
+
+Given a natural language question about Azure resources, generate one or more valid KQL queries that help answer it. You are advisory — provide strategic guidance alongside the queries.
+
+Response format:
+- For simple, single-resource questions: output ONLY the KQL query (no markdown fences, no explanation)
+- For complex or multi-faceted questions (migrations, assessments, architecture reviews): output multiple numbered queries with a brief heading for each, plus short advisory notes explaining the migration/assessment strategy. Use markdown headings (### 1. Title) and wrap each query in ``` fences.
 
 CRITICAL — ARG property access rules:
 - Resource properties are ALWAYS nested under `properties.` — never use bare field names
@@ -27,16 +34,32 @@ CRITICAL — ARG property access rules:
 - Use `tostring()` or `todynamic()` when extracting nested values for projection
 - Use `extend` to create friendly column names from deep paths before `project`
 
-Common patterns:
+CRITICAL — mv-expand rules (arrays like securityRules, subnets, ipConfigurations):
+- After `mv-expand`, the expanded element is a dynamic object — access its fields with dot notation from the alias
+- After `mv-expand rule = properties.securityRules`, the inner fields are:
+  rule.name, rule.properties.priority, rule.properties.access, rule.properties.direction, rule.properties.protocol
+  NOT: securityRules.name, securityRules.properties.priority (unless you named the alias "securityRules")
+- EVERY field you use in `project` MUST first be aliased with `extend`
+  WRONG: project name, rule.properties.priority
+  RIGHT: extend ruleName = rule.name, priority = rule.properties.priority | project name, ruleName, priority
+- NSG security rules example:
+  mv-expand rule = properties.securityRules
+  | extend ruleName = rule.name, priority = toint(rule.properties.priority), access = tostring(rule.properties.access), direction = tostring(rule.properties.direction), protocol = tostring(rule.properties.protocol)
+  | project nsgName = name, ruleName, priority, access, direction, protocol, resourceGroup, location, subscriptionId
+- Subnets example:
+  mv-expand subnet = properties.subnets
+  | extend subnetName = tostring(subnet.name), subnetPrefix = tostring(subnet.properties.addressPrefix)
+  | project vnetName = name, subnetName, subnetPrefix, resourceGroup, location, subscriptionId
+
+Common resource patterns:
 - Private endpoints: properties.privateLinkServiceConnections[0].properties.privateLinkServiceId, properties.customDnsConfigs (not customDnsConfigurations)
 - VMs: properties.hardwareProfile.vmSize, properties.storageProfile.osDisk.osType
 - VNets: properties.addressSpace.addressPrefixes, properties.subnets
 - NICs: properties.ipConfigurations
-- NSGs: properties.securityRules
+- NSGs: properties.securityRules (use mv-expand pattern above)
 - Disks: properties.diskSizeGB, properties.diskState
 
 General rules:
-- Output ONLY the KQL query, no explanation, no markdown fences
 - Use the Resources, ResourceContainers, or advisorresources tables as appropriate
 - Use proper KQL syntax: where, extend, project, summarize, mv-expand, join
 - Always include useful columns like name, resourceGroup, location, subscriptionId
@@ -129,6 +152,33 @@ def execute_query(query: str, subscriptions: list[str] | None = None) -> dict:
     }
 
 
+def _extract_queries(response: str) -> list[dict]:
+    """Extract individual KQL queries from a multi-query LLM response.
+
+    Returns a list of dicts with 'title' and 'kql' keys.
+    """
+    queries = []
+    # Find all fenced code blocks (```...```)
+    blocks = re.findall(r"```(?:\w*)\n(.*?)```", response, re.DOTALL)
+    if not blocks:
+        return queries
+
+    # Try to pair each block with a preceding heading
+    lines = response.split("\n")
+    block_idx = 0
+    for i, line in enumerate(lines):
+        if line.strip().startswith("```") and block_idx < len(blocks):
+            # Look backward for a heading
+            title = f"Query {block_idx + 1}"
+            for j in range(i - 1, max(i - 5, -1), -1):
+                if lines[j].strip().startswith("#"):
+                    title = re.sub(r"^#+\s*", "", lines[j].strip())
+                    break
+            queries.append({"title": title, "kql": blocks[block_idx].strip()})
+            block_idx += 1
+    return queries
+
+
 def ask(question: str):
     """Convert a natural language question to an ARG query, execute it, and provide CSA analysis."""
     tracker = StepTracker("query")
@@ -137,12 +187,36 @@ def ask(question: str):
 
     # Generate KQL from natural language
     tracker.started("kql-generation")
-    kql = _generate_kql(question)
-    if not kql:
+    kql_response = _generate_kql(question)
+    if not kql_response:
         return
     tracker.progress("LLM generated KQL")
     tracker.done("kql-generation")
 
+    # Check if the response contains multiple fenced queries (complex/advisory response)
+    queries = _extract_queries(kql_response)
+
+    if queries:
+        # Multi-query advisory response — display as markdown, then offer to run each
+        console.print()
+        console.print(Markdown(kql_response))
+        console.print()
+
+        # Let user pick which queries to execute
+        for idx, q in enumerate(queries):
+            console.print(f"\n[bold yellow]Query {idx + 1}: {q['title']}[/bold yellow]")
+            console.print(Syntax(q["kql"], "sql", theme="monokai", padding=1))
+            run = console.input(f"[bold]Execute query {idx + 1}? [Y/n]:[/bold] ").strip().lower()
+            if run in ("n", "no"):
+                console.print("[dim]Skipped.[/dim]")
+                continue
+            _execute_and_analyze(question, q["kql"], tracker)
+
+        tracker.summary()
+        return
+
+    # Single-query response — original flow
+    kql = kql_response
     console.print(f"\n[bold yellow]Generated KQL:[/bold yellow]")
     console.print(Syntax(kql, "sql", theme="monokai", padding=1))
 
@@ -153,7 +227,12 @@ def ask(question: str):
         console.print("[dim]Skipped.[/dim]")
         return
 
-    # Execute with auto-retry on invalid queries
+    _execute_and_analyze(question, kql, tracker)
+    tracker.summary()
+
+
+def _execute_and_analyze(question: str, kql: str, tracker: StepTracker):
+    """Execute a single KQL query with auto-retry and optional CSA analysis."""
     tracker.started("arg-execute")
     try:
         result = execute_query(kql)
@@ -191,8 +270,6 @@ def ask(question: str):
     else:
         console.print("[dim]No results returned.[/dim]")
 
-    tracker.summary()
-
 
 def _generate_kql(question: str) -> str | None:
     """Use Azure OpenAI or OpenAI to generate KQL from a question."""
@@ -208,15 +285,7 @@ def _generate_kql(question: str) -> str | None:
                 {"role": "user", "content": question},
             ],
             temperature=0,
-            max_tokens=500,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        console.print(f"[red]LLM error generating KQL: {e}[/red]")
-        return None
-
-
-def _retry_kql(question: str, failed_kql: str, error_msg: str) -> str | None:
+            max_tokens=2000,(question: str, failed_kql: str, error_msg: str) -> str | None:
     """Ask the LLM to fix a failed KQL query based on the error message."""
     client, model = _get_openai_client()
     if not client:
