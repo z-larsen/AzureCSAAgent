@@ -187,6 +187,280 @@ QUERIES = {
                     withEnv=countif(hasEnv),
                     withCostCenter=countif(hasCostCenter)
     """,
+    # ── Deep Network queries ──────────────────────────────────────
+    "vnet_details": """
+        Resources
+        | where type == 'microsoft.network/virtualnetworks'
+        | mv-expand subnet = properties.subnets
+        | project vnetName=name, resourceGroup, location,
+                  addressSpace=properties.addressSpace.addressPrefixes,
+                  subnetName=subnet.name,
+                  subnetPrefix=subnet.properties.addressPrefix,
+                  nsg=subnet.properties.networkSecurityGroup.id,
+                  routeTable=subnet.properties.routeTable.id,
+                  delegations=subnet.properties.delegations,
+                  serviceEndpoints=subnet.properties.serviceEndpoints,
+                  privateEndpointNetworkPolicies=subnet.properties.privateEndpointNetworkPolicies
+    """,
+    "nsg_full_rules": """
+        Resources
+        | where type == 'microsoft.network/networksecuritygroups'
+        | mv-expand rule = properties.securityRules
+        | project nsgName=name, resourceGroup,
+                  ruleName=rule.name, priority=rule.properties.priority,
+                  direction=rule.properties.direction, access=rule.properties.access,
+                  protocol=rule.properties.protocol,
+                  srcAddr=rule.properties.sourceAddressPrefix,
+                  srcPorts=rule.properties.sourcePortRange,
+                  dstAddr=rule.properties.destinationAddressPrefix,
+                  dstPorts=rule.properties.destinationPortRange
+        | order by nsgName asc, toint(priority) asc
+    """,
+    "nsgs_unassociated": """
+        Resources
+        | where type == 'microsoft.network/networksecuritygroups'
+        | where isnull(properties.subnets) or array_length(properties.subnets) == 0
+        | where isnull(properties.networkInterfaces) or array_length(properties.networkInterfaces) == 0
+        | project name, resourceGroup, location
+    """,
+    "subnets_without_nsg": """
+        Resources
+        | where type == 'microsoft.network/virtualnetworks'
+        | mv-expand subnet = properties.subnets
+        | where isempty(subnet.properties.networkSecurityGroup)
+        | where subnet.name !in~ ('GatewaySubnet', 'AzureFirewallSubnet', 'AzureFirewallManagementSubnet', 'AzureBastionSubnet', 'RouteServerSubnet')
+        | project vnetName=name, subnetName=subnet.name, subnetPrefix=subnet.properties.addressPrefix,
+                  resourceGroup, location
+    """,
+    "subnets_without_route_table": """
+        Resources
+        | where type == 'microsoft.network/virtualnetworks'
+        | mv-expand subnet = properties.subnets
+        | where isempty(subnet.properties.routeTable)
+        | where subnet.name !in~ ('GatewaySubnet', 'AzureBastionSubnet')
+        | project vnetName=name, subnetName=subnet.name, subnetPrefix=subnet.properties.addressPrefix,
+                  resourceGroup, location
+    """,
+    "application_gateways": """
+        Resources
+        | where type == 'microsoft.network/applicationgateways'
+        | project name, resourceGroup, location,
+                  sku=properties.sku.name, tier=properties.sku.tier,
+                  capacity=properties.sku.capacity,
+                  wafEnabled=properties.webApplicationFirewallConfiguration.enabled,
+                  sslPolicy=properties.sslPolicy.policyType,
+                  frontendPorts=array_length(properties.frontendPorts),
+                  httpListeners=array_length(properties.httpListeners),
+                  backendPools=array_length(properties.backendAddressPools),
+                  probes=array_length(properties.probes)
+    """,
+    "load_balancers": """
+        Resources
+        | where type == 'microsoft.network/loadbalancers'
+        | project name, resourceGroup, location,
+                  sku=properties.sku.name,
+                  frontendIPs=array_length(properties.frontendIPConfigurations),
+                  backendPools=array_length(properties.backendAddressPools),
+                  rules=array_length(properties.loadBalancingRules),
+                  probes=array_length(properties.probes),
+                  inboundNatRules=array_length(properties.inboundNatRules)
+    """,
+    "firewalls": """
+        Resources
+        | where type == 'microsoft.network/azurefirewalls'
+        | project name, resourceGroup, location,
+                  sku=properties.sku.name, tier=properties.sku.tier,
+                  threatIntelMode=properties.threatIntelMode,
+                  firewallPolicy=properties.firewallPolicy.id,
+                  ipConfigurations=array_length(properties.ipConfigurations)
+    """,
+    "firewall_policies": """
+        Resources
+        | where type == 'microsoft.network/firewallpolicies'
+        | project name, resourceGroup, location,
+                  tier=properties.sku.tier,
+                  threatIntelMode=properties.threatIntelMode,
+                  dnsProxy=properties.dnsSettings.enableProxy,
+                  childPolicies=array_length(properties.childPolicies),
+                  ruleCollectionGroups=array_length(properties.ruleCollectionGroups)
+    """,
+    "vpn_gateways": """
+        Resources
+        | where type == 'microsoft.network/virtualnetworkgateways'
+        | where properties.gatewayType == 'Vpn'
+        | project name, resourceGroup, location,
+                  sku=properties.sku.name,
+                  vpnType=properties.vpnType,
+                  activeActive=properties.activeActive,
+                  enableBgp=properties.enableBgp,
+                  bgpAsn=properties.bgpSettings.asn,
+                  generation=properties.vpnGatewayGeneration
+    """,
+    "expressroute_gateways": """
+        Resources
+        | where type == 'microsoft.network/virtualnetworkgateways'
+        | where properties.gatewayType == 'ExpressRoute'
+        | project name, resourceGroup, location,
+                  sku=properties.sku.name
+    """,
+    "expressroute_circuits": """
+        Resources
+        | where type == 'microsoft.network/expressroutecircuits'
+        | project name, resourceGroup, location,
+                  serviceProvider=properties.serviceProviderProperties.serviceProviderName,
+                  peeringLocation=properties.serviceProviderProperties.peeringLocation,
+                  bandwidthMbps=properties.serviceProviderProperties.bandwidthInMbps,
+                  sku=sku.name, tier=sku.tier,
+                  circuitProvisioningState=properties.circuitProvisioningState,
+                  serviceProviderState=properties.serviceProviderProvisioningState,
+                  globalReachEnabled=properties.globalReachEnabled
+    """,
+    "expressroute_peerings": """
+        Resources
+        | where type == 'microsoft.network/expressroutecircuits'
+        | mv-expand peering = properties.peerings
+        | project circuitName=name,
+                  peeringType=peering.properties.peeringType,
+                  state=peering.properties.state,
+                  primaryPrefix=peering.properties.primaryPeerAddressPrefix,
+                  secondaryPrefix=peering.properties.secondaryPeerAddressPrefix,
+                  vlanId=peering.properties.vlanId,
+                  peerAsn=peering.properties.peerASN
+    """,
+    "virtual_wan": """
+        Resources
+        | where type == 'microsoft.network/virtualwans'
+        | project name, resourceGroup, location,
+                  type_=properties.type,
+                  allowBranchToBranch=properties.allowBranchToBranchTraffic,
+                  allowVnetToVnet=properties.allowVnetToVnetTraffic,
+                  virtualHubs=array_length(properties.virtualHubs)
+    """,
+    "virtual_wan_hubs": """
+        Resources
+        | where type == 'microsoft.network/virtualhubs'
+        | project name, resourceGroup, location,
+                  addressPrefix=properties.addressPrefix,
+                  sku=properties.sku,
+                  routingState=properties.routingState,
+                  virtualWan=properties.virtualWan.id
+    """,
+    "dns_zones": """
+        Resources
+        | where type == 'microsoft.network/dnszones'
+        | project name, resourceGroup,
+                  recordCount=properties.numberOfRecordSets,
+                  nameServers=properties.nameServers
+    """,
+    "private_dns_zones": """
+        Resources
+        | where type == 'microsoft.network/privatednszones'
+        | project name, resourceGroup,
+                  recordCount=properties.numberOfRecordSets,
+                  vnetLinks=properties.numberOfVirtualNetworkLinks,
+                  autoRegistration=properties.numberOfVirtualNetworkLinksWithRegistration
+    """,
+    "private_dns_vnet_links": """
+        Resources
+        | where type == 'microsoft.network/privatednszones/virtualnetworklinks'
+        | project zoneName=tostring(split(id, '/')[8]), linkName=name,
+                  resourceGroup,
+                  registrationEnabled=properties.registrationEnabled,
+                  vnetId=properties.virtualNetwork.id,
+                  linkState=properties.virtualNetworkLinkState
+    """,
+    "private_endpoint_details": """
+        Resources
+        | where type == 'microsoft.network/privateendpoints'
+        | extend targetResource = tostring(properties.privateLinkServiceConnections[0].properties.privateLinkServiceId)
+        | extend targetGroup = tostring(properties.privateLinkServiceConnections[0].properties.groupIds[0])
+        | extend connectionState = tostring(properties.privateLinkServiceConnections[0].properties.privateLinkServiceConnectionState.status)
+        | extend subnetId = tostring(properties.subnet.id)
+        | project name, resourceGroup, location, targetResource, targetGroup, connectionState, subnetId
+    """,
+    "public_ip_details": """
+        Resources
+        | where type == 'microsoft.network/publicipaddresses'
+        | project name, resourceGroup, location,
+                  sku=sku.name,
+                  allocationMethod=properties.publicIPAllocationMethod,
+                  ipAddress=properties.ipAddress,
+                  attached=isnotnull(properties.ipConfiguration.id),
+                  attachedTo=properties.ipConfiguration.id,
+                  ddosProtection=properties.ddosSettings.protectionMode,
+                  zones=zones
+    """,
+    "ddos_plans": """
+        Resources
+        | where type == 'microsoft.network/ddosprotectionplans'
+        | project name, resourceGroup, location,
+                  protectedVnets=array_length(properties.virtualNetworks)
+    """,
+    "bastion_hosts": """
+        Resources
+        | where type == 'microsoft.network/bastionhosts'
+        | project name, resourceGroup, location,
+                  sku=sku.name,
+                  scaleUnits=properties.scaleUnits,
+                  enableTunneling=properties.enableTunneling,
+                  enableShareableLink=properties.enableShareableLink
+    """,
+    "front_doors": """
+        Resources
+        | where type in~ ('microsoft.network/frontdoors', 'microsoft.cdn/profiles')
+        | project name, resourceGroup, location, type,
+                  sku=sku.name
+    """,
+    "traffic_managers": """
+        Resources
+        | where type == 'microsoft.network/trafficmanagerprofiles'
+        | project name, resourceGroup,
+                  routingMethod=properties.trafficRoutingMethod,
+                  monitorStatus=properties.monitorConfig.profileMonitorStatus,
+                  endpoints=array_length(properties.endpoints)
+    """,
+    "nat_gateways": """
+        Resources
+        | where type == 'microsoft.network/natgateways'
+        | project name, resourceGroup, location,
+                  sku=sku.name,
+                  idleTimeoutMinutes=properties.idleTimeoutInMinutes,
+                  publicIps=array_length(properties.publicIpAddresses),
+                  publicPrefixes=array_length(properties.publicIpPrefixes),
+                  subnets=array_length(properties.subnets)
+    """,
+    "service_endpoints": """
+        Resources
+        | where type == 'microsoft.network/virtualnetworks'
+        | mv-expand subnet = properties.subnets
+        | mv-expand endpoint = subnet.properties.serviceEndpoints
+        | where isnotnull(endpoint)
+        | project vnetName=name, subnetName=subnet.name,
+                  service=endpoint.service, locations=endpoint.locations
+    """,
+    "nics_with_public_ip": """
+        Resources
+        | where type == 'microsoft.network/networkinterfaces'
+        | mv-expand ipConfig = properties.ipConfigurations
+        | where isnotnull(ipConfig.properties.publicIPAddress)
+        | project nicName=name, resourceGroup,
+                  vmId=properties.virtualMachine.id,
+                  publicIp=ipConfig.properties.publicIPAddress.id,
+                  subnetId=ipConfig.properties.subnet.id
+    """,
+    "ip_address_overlap": """
+        Resources
+        | where type == 'microsoft.network/virtualnetworks'
+        | mv-expand prefix = properties.addressSpace.addressPrefixes
+        | project vnetName=name, resourceGroup, location, addressPrefix=tostring(prefix)
+        | order by addressPrefix asc
+    """,
+    "network_resource_inventory": """
+        Resources
+        | where type startswith 'microsoft.network/'
+        | summarize count() by type
+        | order by count_ desc
+    """,
 }
 
 
@@ -225,8 +499,21 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
             "log_analytics_workspaces", "security_center", "security_assessments",
             "key_vaults", "resource_locks", "tag_coverage", "untagged_resources",
         ],
-        "network": ["vnets", "vnet_peerings", "public_ips", "nsg_any_rules", "private_endpoints",
-                     "route_tables", "network_watchers"],
+        "network": [
+            "network_resource_inventory",
+            "vnet_details", "vnet_peerings", "ip_address_overlap",
+            "subnets_without_nsg", "subnets_without_route_table",
+            "nsg_full_rules", "nsg_any_rules", "nsgs_unassociated",
+            "route_tables", "nat_gateways",
+            "public_ip_details", "nics_with_public_ip", "ddos_plans",
+            "firewalls", "firewall_policies",
+            "application_gateways", "load_balancers", "front_doors",
+            "vpn_gateways", "expressroute_gateways", "expressroute_circuits", "expressroute_peerings",
+            "virtual_wan", "virtual_wan_hubs",
+            "private_endpoint_details", "private_endpoints", "service_endpoints",
+            "dns_zones", "private_dns_zones", "private_dns_vnet_links",
+            "bastion_hosts", "traffic_managers", "network_watchers",
+        ],
         "waf": ["resource_count", "public_ips", "nsg_any_rules", "orphaned_disks", "advisor_cost",
                 "security_center", "security_assessments", "key_vaults", "resource_locks"],
     }
