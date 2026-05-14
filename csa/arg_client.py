@@ -285,7 +285,15 @@ def _generate_kql(question: str) -> str | None:
                 {"role": "user", "content": question},
             ],
             temperature=0,
-            max_tokens=2000,(question: str, failed_kql: str, error_msg: str) -> str | None:
+            max_tokens=2000,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        console.print(f"[red]LLM error generating KQL: {e}[/red]")
+        return None
+
+
+def _retry_kql(question: str, failed_kql: str, error_msg: str) -> str | None:
     """Ask the LLM to fix a failed KQL query based on the error message."""
     client, model = _get_openai_client()
     if not client:
