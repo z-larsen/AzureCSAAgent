@@ -70,6 +70,57 @@ General rules:
   RIGHT: extend vnetPrefixes = tostring(properties.addressSpace.addressPrefixes) | project name, vnetPrefixes
 - When using mv-expand on arrays, always extend aliases before project
 - Wrap dynamic/array values in tostring() when projecting them
+
+COST OPTIMIZATION — When the user asks about cost savings, FinOps, saving money, or reducing spend:
+Generate a COMPREHENSIVE set of queries covering ALL three pillars of cost optimization:
+
+1. **Rate optimization** (buy cheaper):
+   - Azure Advisor cost recommendations: advisorresources | where type == "microsoft.advisor/recommendations" | where properties.category == "Cost"
+     These contain: impactedField, impactedValue, shortDescription.solution, extendedProperties (savingsAmount, annualSavingsAmount, currentSku, targetSku, reservationScope, lookbackPeriod)
+   - Advisor recommendations include: Reserved Instance purchases, VM right-sizing (with actual utilization %), shutdown candidates, savings plan suggestions
+   
+2. **Usage optimization** (use less):
+   - Advisor "right-size or shutdown" recommendations have CPU utilization data in extendedProperties (MaxCpuP95, avgCpuP95)
+   - Unattached/idle resources: managed disks with diskState == "Unattached", NICs not attached to VMs, public IPs not associated
+   - App Service plans with 0 apps
+   - Idle/stopped VMs still allocated (powerState != "deallocated" but low utilization per Advisor)
+   
+3. **Architecture optimization** (design better):
+   - Over-provisioned resources (Advisor right-size recommendations)
+   - Resources in premium tiers that could use standard (e.g., Premium SSD → Standard SSD per Advisor)
+   - Storage accounts: check for lifecycle management policies, access tier opportunities
+
+Key advisorresources query patterns:
+```
+advisorresources
+| where type == "microsoft.advisor/recommendations"
+| where properties.category == "Cost"
+| extend impactedResource = tostring(properties.impactedValue),
+         impact = tostring(properties.impact),
+         problem = tostring(properties.shortDescription.problem),
+         solution = tostring(properties.shortDescription.solution),
+         savingsAmount = tostring(properties.extendedProperties.savingsAmount),
+         annualSavings = tostring(properties.extendedProperties.annualSavingsAmount),
+         savingsCurrency = tostring(properties.extendedProperties.savingsCurrency)
+| project impactedResource, problem, solution, impact, savingsAmount, annualSavings, savingsCurrency, resourceGroup, subscriptionId
+```
+
+For right-sizing specifically:
+```
+advisorresources
+| where type == "microsoft.advisor/recommendations"
+| where properties.category == "Cost"
+| where properties.shortDescription.problem has "right-size" or properties.shortDescription.problem has "underutilized"
+| extend vm = tostring(properties.impactedValue),
+         currentSku = tostring(properties.extendedProperties.currentSku),
+         targetSku = tostring(properties.extendedProperties.targetSku),
+         maxCpu = tostring(properties.extendedProperties.MaxCpuP95),
+         avgCpu = tostring(properties.extendedProperties.avgCpuP95),
+         savings = tostring(properties.extendedProperties.savingsAmount)
+| project vm, currentSku, targetSku, maxCpu, avgCpu, savings, resourceGroup, subscriptionId
+```
+
+ALWAYS include the Advisor cost recommendations query when the topic is cost savings — it's the single most valuable data source because it contains actual utilization metrics and dollar amounts.
 """
 
 ANALYSIS_SYSTEM_PROMPT = """You are a senior Azure Cloud Solution Architect with 25 years of experience.
