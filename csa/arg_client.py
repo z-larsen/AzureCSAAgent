@@ -14,6 +14,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from csa.progress import StepTracker
+from csa.tokens import session as token_session
 
 console = Console()
 
@@ -287,6 +288,7 @@ def _generate_kql(question: str) -> str | None:
             temperature=0,
             max_tokens=2000,
         )
+        token_session.record(response.usage, model, "KQL generation")
         return response.choices[0].message.content.strip()
     except Exception as e:
         console.print(f"[red]LLM error generating KQL: {e}[/red]")
@@ -311,6 +313,7 @@ def _retry_kql(question: str, failed_kql: str, error_msg: str) -> str | None:
             temperature=0,
             max_tokens=500,
         )
+        token_session.record(response.usage, model, "KQL retry")
         return response.choices[0].message.content.strip()
     except Exception as e:
         console.print(f"[red]LLM error during retry: {e}[/red]")
@@ -356,16 +359,21 @@ Analyze these results and provide your CSA assessment."""
             temperature=0.3,
             max_tokens=1500,
             stream=True,
+            stream_options={"include_usage": True},
         )
 
         # Collect streamed chunks then render as markdown
         full_text = ""
+        usage = None
         for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 full_text += chunk.choices[0].delta.content
+            if hasattr(chunk, "usage") and chunk.usage:
+                usage = chunk.usage
 
         console.print(Markdown(full_text))
         console.print()
+        token_session.record(usage, model, "CSA analysis")
     except Exception as e:
         console.print(f"[red]Analysis error: {e}[/red]")
 

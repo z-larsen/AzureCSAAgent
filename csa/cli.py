@@ -6,12 +6,14 @@ import typer
 from rich.console import Console
 from rich.panel import Panel
 
+from csa.tokens import session as token_session
+
 console = Console()
 
 try:
     __version__ = pkg_version("azure-csa-agent")
 except Exception:
-    __version__ = "1.0.4"
+    __version__ = "1.0.5"
 
 BANNER = r"""
 [bold cyan] █████╗ ███████╗██╗   ██╗██████╗ ███████╗     ██████╗███████╗ █████╗ [/bold cyan]
@@ -96,12 +98,14 @@ def main(ctx: typer.Context):
         try:
             user_input = console.input("[bold cyan]azure-csa>[/bold cyan] ").strip()
         except (KeyboardInterrupt, EOFError):
+            token_session.print_session_summary()
             console.print("\n[dim]Goodbye.[/dim]")
             break
 
         if not user_input:
             continue
         if user_input.lower() in ("exit", "quit", "q"):
+            token_session.print_session_summary()
             console.print("[dim]Goodbye.[/dim]")
             break
 
