@@ -13,7 +13,7 @@ console = Console()
 try:
     __version__ = pkg_version("azure-csa-agent")
 except Exception:
-    __version__ = "1.0.5"
+    __version__ = "1.0.6"
 
 BANNER = r"""
 [bold cyan] █████╗ ███████╗██╗   ██╗██████╗ ███████╗     ██████╗███████╗ █████╗ [/bold cyan]

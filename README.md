@@ -10,7 +10,7 @@ A senior Azure Cloud Solution Architect agent that runs advisory assessments aga
 ██║  ██║███████╗╚██████╔╝██║  ██║███████╗
 ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝
 
- ☁  Cloud Solution Architect Agent  v1.0.5
+ ☁  Cloud Solution Architect Agent  v1.0.6
 ```
 
 ## What it does

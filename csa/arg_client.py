@@ -198,20 +198,54 @@ def ask(question: str):
     queries = _extract_queries(kql_response)
 
     if queries:
-        # Multi-query advisory response — display as markdown, then offer to run each
+        # Multi-query advisory response — show plan, single Y/n, consolidated analysis
         console.print()
-        console.print(Markdown(kql_response))
-        console.print()
-
-        # Let user pick which queries to execute
+        console.print(Panel.fit("[bold yellow]Query Plan[/bold yellow]", border_style="yellow"))
         for idx, q in enumerate(queries):
-            console.print(f"\n[bold yellow]Query {idx + 1}: {q['title']}[/bold yellow]")
-            console.print(Syntax(q["kql"], "sql", theme="monokai", padding=1))
-            run = console.input(f"[bold]Execute query {idx + 1}? [Y/n]:[/bold] ").strip().lower()
-            if run in ("n", "no"):
-                console.print("[dim]Skipped.[/dim]")
-                continue
-            _execute_and_analyze(question, q["kql"], tracker)
+            console.print(f"  [cyan]{idx + 1}.[/cyan] {q['title']}")
+        console.print(f"\n  [dim]{len(queries)} queries will be executed against your environment[/dim]")
+
+        # Estimate cost: ~1500 tokens per analysis call input, ~800 output
+        from csa.tokens import _PRICING, _DEFAULT_PRICING
+        model = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+        pricing = _PRICING.get(model, _DEFAULT_PRICING)
+        est_input = len(queries) * 200 + 2000  # queries are cheap, analysis is the big one
+        est_output = 1500
+        est_cost = (est_input * pricing["input"] + est_output * pricing["output"]) / 1_000_000
+        console.print(f"  [dim]Estimated cost: ~${est_cost:.4f} ({model})[/dim]")
+
+        console.print()
+        run = console.input("[bold]Run all queries? [Y/n]:[/bold] ").strip().lower()
+        if run in ("n", "no"):
+            console.print("[dim]Skipped.[/dim]")
+            return
+
+        # Execute all queries, collect results
+        all_results = []
+        for idx, q in enumerate(queries):
+            label = f"[{idx + 1}/{len(queries)}] {q['title']}"
+            tracker.started("arg-execute")
+            tracker.status(label)
+            result = _execute_query_safe(question, q["kql"], tracker)
+            if result and result["data"]:
+                all_results.append({
+                    "title": q["title"],
+                    "kql": q["kql"],
+                    "data": result["data"],
+                    "count": result["count"],
+                })
+                console.print(f"  [green]✓[/green] {q['title']} — {result['count']} rows")
+            else:
+                console.print(f"  [yellow]⚠[/yellow] {q['title']} — no results")
+
+        # Consolidated analysis across all results
+        if all_results:
+            console.print()
+            tracker.started("csa-analysis")
+            tracker.status("running consolidated CSA analysis")
+            _analyze_multi_results(question, all_results)
+            tracker.progress("analysis complete")
+            tracker.done("csa-analysis")
 
         tracker.summary()
         return
@@ -230,6 +264,27 @@ def ask(question: str):
 
     _execute_and_analyze(question, kql, tracker)
     tracker.summary()
+
+
+def _execute_query_safe(question: str, kql: str, tracker: StepTracker) -> dict | None:
+    """Execute a KQL query with auto-retry. Returns result dict or None."""
+    try:
+        result = execute_query(kql)
+        tracker.done("arg-execute", f"{result['count']} rows")
+        return result
+    except Exception as e:
+        error_msg = _extract_error(e)
+        fixed_kql = _retry_kql(question, kql, error_msg)
+        if not fixed_kql:
+            tracker.done("arg-execute", "failed")
+            return None
+        try:
+            result = execute_query(fixed_kql)
+            tracker.done("arg-execute", f"{result['count']} rows (retried)")
+            return result
+        except Exception:
+            tracker.done("arg-execute", "retry failed")
+            return None
 
 
 def _execute_and_analyze(question: str, kql: str, tracker: StepTracker):
@@ -374,6 +429,73 @@ Analyze these results and provide your CSA assessment."""
         console.print(Markdown(full_text))
         console.print()
         token_session.record(usage, model, "CSA analysis")
+    except Exception as e:
+        console.print(f"[red]Analysis error: {e}[/red]")
+
+
+def _analyze_multi_results(question: str, results: list[dict]):
+    """Run a single consolidated LLM analysis across multiple query results."""
+    client, model = _get_openai_client()
+    if not client:
+        return
+
+    # Build a combined data summary — limit each query to 15 rows to fit context
+    sections = []
+    for r in results:
+        sample = r["data"][:15]
+        data_str = json.dumps(sample, indent=2, default=str)
+        if len(r["data"]) > 15:
+            data_str += f"\n... ({len(r['data']) - 15} additional rows not shown)"
+        sections.append(
+            f"### {r['title']} ({r['count']} rows)\n"
+            f"```kql\n{r['kql']}\n```\n"
+            f"```json\n{data_str}\n```"
+        )
+
+    combined = "\n\n".join(sections)
+
+    user_msg = f"""**User's Question:** {question}
+
+The following queries were executed against the user's Azure environment:
+
+{combined}
+
+Provide a **single consolidated assessment** that:
+1. Synthesizes findings across ALL query results — do not analyze each query separately
+2. Orders recommendations by **priority** (critical risks first, then improvements, then nice-to-haves)
+3. Identifies gaps, risks, and strengths in their current environment
+4. Provides a clear **action plan** with specific next steps
+5. If the question involves migration or transformation, outline phases with dependencies
+
+Be direct and actionable. Reference specific resources by name from the results."""
+
+    console.print()
+    console.print(Panel.fit("[bold magenta]Consolidated CSA Analysis[/bold magenta]", border_style="magenta"))
+
+    try:
+        stream = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.3,
+            max_tokens=3000,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+
+        full_text = ""
+        usage = None
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                full_text += chunk.choices[0].delta.content
+            if hasattr(chunk, "usage") and chunk.usage:
+                usage = chunk.usage
+
+        console.print(Markdown(full_text))
+        console.print()
+        token_session.record(usage, model, "Consolidated analysis")
     except Exception as e:
         console.print(f"[red]Analysis error: {e}[/red]")
 
