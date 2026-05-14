@@ -1,6 +1,6 @@
 [project]
 name = "azure-csa-agent"
-version = "1.0.10"
+version = "1.1.0"
 description = "Senior Azure CSA agent — advisory-only architecture, governance, networking, security, and FinOps assessments grounded in live Azure data and official Microsoft documentation."
 requires-python = ">=3.11"
 license = { text = "MIT" }

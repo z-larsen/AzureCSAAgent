@@ -13,6 +13,7 @@ A senior Azure Cloud Solution Architect agent that runs advisory assessments aga
 - **Multi-query plans** — Complex questions (migrations, cost reviews) generate a full query plan, execute all with a single Y/n, and deliver one consolidated analysis ordered by priority
 - **Conversation memory** — Follow-up prompts have context from prior queries, so you can drill deeper without re-explaining
 - **FinOps cost optimization** — Queries Azure Advisor for utilization-based right-sizing (with CPU metrics), RI/savings plan recommendations, and dollar-denominated savings per resource
+- **IaC generation** — Generate production-ready Bicep or Terraform using Azure Verified Modules (AVM). Say "deploy a hub-spoke network" and get deployment-ready files in `outputs/iac/`
 - **Token cost tracking** — Shows per-call cost and a session summary on exit
 - **CSA analysis** — A second LLM pass provides structured findings, risks, and prioritized recommendations
 - **VS Code chat mode** — Use as a Copilot chat mode with Azure MCP Server for interactive architecture conversations
@@ -212,6 +213,8 @@ Ask questions in plain English. The agent generates KQL, shows it for confirmati
 azure-csa> show me untagged resources by type
 azure-csa> I need to do a network review in order to deploy a vWAN
 azure-csa> can you help me save $100 this month
+azure-csa> deploy a hub-spoke network with firewall in Bicep
+azure-csa> generate terraform for an AKS cluster with monitoring
 azure-csa> query "which VMs are not using Azure Hybrid Benefit"
 azure-csa> what public IPs are unattached
 azure-csa> now check VNET peerings to confirm connectivity   ← follow-up with context
@@ -264,6 +267,7 @@ export AZURE_OPENAI_API_KEY=<your-key>
 │   ├── arg_client.py                  # ARG client + natural language → KQL + analysis
 │   ├── assessments.py                 # Pre-built assessment runner
 │   ├── cli.py                         # Interactive CLI with REPL + conversation memory
+│   ├── iac.py                         # IaC generator — Bicep & Terraform with AVM
 │   ├── progress.py                    # Step tracker for query progress display
 │   └── tokens.py                      # Token usage and cost tracking
 ├── tests/

@@ -14,7 +14,7 @@ console = Console()
 try:
     __version__ = pkg_version("azure-csa-agent")
 except Exception:
-    __version__ = "1.0.10"
+    __version__ = "1.1.0"
 
 BANNER = r"""
 [bold cyan] █████╗ ███████╗██╗   ██╗██████╗ ███████╗     ██████╗███████╗ █████╗ [/bold cyan]
@@ -37,11 +37,12 @@ HELP_TEXT = """
 [bold yellow]Try something like:[/bold yellow]
   [green]"help me reduce costs by $500 this month"[/green]
   [green]"review my network and help me better secure it"[/green]
-  [green]"help me redesign my landing zones"[/green]
+  [green]"deploy a hub-spoke network with firewall in Bicep"[/green]
 
 [bold yellow]Commands:[/bold yellow]
   [green]assess <subscription-id>[/green]                General assessment
   [green]assess <subscription-id> -t finops[/green]      FinOps & cost optimization
+  [green]deploy <description>[/green]                    Generate Bicep/Terraform IaC
   [green]clear[/green]                                   Clear conversation history
   [green]exit[/green]                                    Quit
 """
@@ -126,6 +127,8 @@ def main(ctx: typer.Context):
 
         if cmd == "assess" and len(parts) > 1:
             _parse_assess(parts[1])
+        elif cmd == "deploy" and len(parts) > 1:
+            _run_deploy(parts[1].strip('"').strip("'"), conversation_history)
         elif cmd == "query" and len(parts) > 1:
             _run_query(parts[1].strip('"').strip("'"), conversation_history)
         elif cmd in ("help", "?"):
@@ -134,8 +137,15 @@ def main(ctx: typer.Context):
             conversation_history.clear()
             console.print("[dim]Conversation history cleared.[/dim]")
         else:
-            # Treat everything else as a natural language query
-            _run_query(user_input, conversation_history)
+            # Detect IaC intent in natural language and route accordingly
+            iac_keywords = ["deploy", "bicep", "terraform", "infrastructure", "iac",
+                           "provision", "arm template", "landing zone template",
+                           "generate bicep", "generate terraform", "hub-spoke",
+                           "verified module", "avm"]
+            if any(kw in user_input.lower() for kw in iac_keywords):
+                _run_deploy(user_input, conversation_history)
+            else:
+                _run_query(user_input, conversation_history)
 
 
 def _parse_assess(args_str: str):
@@ -169,6 +179,16 @@ def _run_query(question: str, history: list[dict] | None = None):
     summary = ask(question, history)
     if history is not None and summary:
         history.append({"role": "user", "content": question})
+        history.append({"role": "assistant", "content": summary})
+
+
+def _run_deploy(request: str, history: list[dict] | None = None):
+    """Generate IaC from a natural language request."""
+    from csa.iac import generate
+
+    summary = generate(request, history)
+    if history is not None and summary:
+        history.append({"role": "user", "content": request})
         history.append({"role": "assistant", "content": summary})
 
 
