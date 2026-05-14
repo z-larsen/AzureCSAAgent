@@ -191,6 +191,21 @@ Ask questions in plain English. The agent generates KQL, shows it for confirmati
    set AZURE_OPENAI_DEPLOYMENT=gpt-4o
    ```
 
+   To persist these so every new terminal picks them up automatically:
+
+   ```powershell
+   # Windows — persist to user environment (one-time)
+   [Environment]::SetEnvironmentVariable("AZURE_OPENAI_ENDPOINT", "https://<your-openai-name>.openai.azure.com", "User")
+   [Environment]::SetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT", "gpt-4o", "User")
+   ```
+
+   ```bash
+   # Linux/macOS — add to your shell profile (one-time)
+   echo 'export AZURE_OPENAI_ENDPOINT=https://<your-openai-name>.openai.azure.com' >> ~/.bashrc
+   echo 'export AZURE_OPENAI_DEPLOYMENT=gpt-4o' >> ~/.bashrc
+   source ~/.bashrc
+   ```
+
 ### Usage
 
 ```
