@@ -1,5 +1,6 @@
 """CLI entrypoint for the Azure CSA agent."""
 
+import random
 from importlib.metadata import version as pkg_version
 
 import typer
@@ -13,7 +14,7 @@ console = Console()
 try:
     __version__ = pkg_version("azure-csa-agent")
 except Exception:
-    __version__ = "1.0.9"
+    __version__ = "1.0.10"
 
 BANNER = r"""
 [bold cyan] █████╗ ███████╗██╗   ██╗██████╗ ███████╗     ██████╗███████╗ █████╗ [/bold cyan]
@@ -33,18 +34,24 @@ BANNER = r"""
 """
 
 HELP_TEXT = """
+[bold yellow]Try something like:[/bold yellow]
+  [green]"help me reduce costs by $500 this month"[/green]
+  [green]"review my network and help me better secure it"[/green]
+  [green]"help me redesign my landing zones"[/green]
+
 [bold yellow]Commands:[/bold yellow]
   [green]assess <subscription-id>[/green]                General assessment
   [green]assess <subscription-id> -t finops[/green]      FinOps & cost optimization
-  [green]assess <subscription-id> -t network[/green]     Networking review
-  [green]assess <subscription-id> -t landing-zone[/green] Landing zone alignment
-  [green]assess <subscription-id> -t waf[/green]         Well-Architected review
-  [green]query "show untagged resources"[/green]         Natural language ARG query
   [green]clear[/green]                                   Clear conversation history
   [green]exit[/green]                                    Quit
-
-[dim]Or just type in natural language...[/dim]
 """
+
+_GREETING_PHRASES = [
+    "What are we working on today?",
+    "How can I help?",
+    "What's on your mind?",
+    "What can I help you with?",
+]
 
 app = typer.Typer(
     name="azure-csa",
@@ -94,6 +101,7 @@ def main(ctx: typer.Context):
     console.print(Panel(BANNER, border_style="cyan", padding=(0, 2)))
     _check_llm_backend()
     console.print(HELP_TEXT)
+    console.print(f"[dim]{random.choice(_GREETING_PHRASES)}[/dim]\n")
 
     conversation_history: list[dict] = []
 
