@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from rich.console import Console
 
 from csa.arg_client import execute_query
+from csa.progress import StepTracker
 
 console = Console()
 
@@ -1285,6 +1286,8 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
         "waf": "well-architected-review",
     }
 
+    tracker = StepTracker(f"{assessment_type}-assessment")
+
     console.print(f"\n[bold green]Azure CSA Assessment[/bold green]")
     console.print(f"  Scope: {scope}")
     console.print(f"  Type:  {assessment_type}")
@@ -1292,11 +1295,9 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
 
     skill_name = skill_map.get(assessment_type)
     if skill_name:
-        console.print(f"[dim]⚙  Loading skill: {skill_name}...[/dim]")
+        tracker.started(f"skill:{skill_name}")
     else:
-        console.print(f"[dim]⚙  Running general assessment (no specific skill)...[/dim]")
-
-    console.print(f"[dim]🔍 Querying Azure Resource Graph...[/dim]\n")
+        tracker.started("general-assessment")
 
     subscriptions = [scope] if "-" in scope and len(scope) == 36 else None
 
@@ -1336,24 +1337,34 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
     selected = queries_to_run.get(assessment_type, queries_to_run["general"])
     results = {}
 
+    tracker.started("arg-queries")
+    tracker.status(f"running {len(selected)} queries against Azure Resource Graph")
+
     for query_name in selected:
         console.print(f"  🔍 {query_name}...", end=" ")
         try:
             result = execute_query(QUERIES[query_name], subscriptions)
             results[query_name] = result
+            tracker.progress(f"{query_name} → {result['count']} rows")
             console.print(f"[green]{result['count']} rows[/green]")
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
             results[query_name] = {"error": str(e)}
+            tracker.progress(f"{query_name} → error")
 
-    # Write results to output
-    console.print(f"\n[dim]📝 Generating report...[/dim]")
+    tracker.done("arg-queries", f"{len(selected)} queries executed")
 
     # Run analysis for network assessments
     findings = []
     if assessment_type == "network":
-        console.print(f"[dim]📊 Analyzing results against best practices...[/dim]")
+        tracker.started("network-analysis")
+        tracker.status("analyzing results against best practices")
         findings = _analyze_network(results)
+        tracker.progress(f"{len(findings)} findings")
+        tracker.done("network-analysis", f"{len(findings)} findings identified")
+
+    # Write results to output
+    tracker.started("report-generation")
 
     out_path = Path(output_dir) / f"{assessment_type}-assessment.md"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1383,6 +1394,9 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
     with open(out_path, "w") as f:
         f.write(report_text)
 
+    tracker.progress(f"saved to {out_path}")
+    tracker.done("report-generation", str(out_path))
+
     if tee:
         # Print analysis findings first for network assessments
         if findings:
@@ -1408,3 +1422,4 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
             console.print()
 
     console.print(f"[bold green]✓ Report saved to {out_path}[/bold green]")
+    tracker.summary()

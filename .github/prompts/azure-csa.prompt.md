@@ -60,9 +60,8 @@ On your FIRST response in any new conversation, display this banner before your 
 ║             ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║                 ║
 ║             ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝                 ║
 ║                                                                       ║
-║    ☁  Cloud Solution Architect Agent  v1.0.0                          ║
+║    ☁  Cloud Solution Architect Agent  v1.0.1                          ║
 ║    ─────────────────────────────────────────                          ║
-║    Advisory Only  │  25 Years Experience  │  WAF Aligned              ║
 ║                                                                       ║
 ║    Skills: FinOps · Landing Zones · Networking · Security             ║
 ║            Governance · Reliability · Diagnostics · K8s               ║

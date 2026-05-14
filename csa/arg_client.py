@@ -12,6 +12,8 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
+from csa.progress import StepTracker
+
 console = Console()
 
 ARG_SYSTEM_PROMPT = """You are an Azure Resource Graph (ARG) query expert. Given a natural language question about Azure resources, generate a valid KQL query that answers it.
@@ -110,13 +112,17 @@ def execute_query(query: str, subscriptions: list[str] | None = None) -> dict:
 
 def ask(question: str):
     """Convert a natural language question to an ARG query, execute it, and provide CSA analysis."""
+    tracker = StepTracker("query")
+
     console.print(f"\n[bold cyan]Question:[/bold cyan] {question}")
 
     # Generate KQL from natural language
-    console.print(f"\n[dim]⚙  Generating ARG query...[/dim]")
+    tracker.started("kql-generation")
     kql = _generate_kql(question)
     if not kql:
         return
+    tracker.progress("LLM generated KQL")
+    tracker.done("kql-generation")
 
     console.print(f"\n[bold yellow]Generated KQL:[/bold yellow]")
     console.print(Syntax(kql, "sql", theme="monokai", padding=1))
@@ -129,34 +135,44 @@ def ask(question: str):
         return
 
     # Execute with auto-retry on invalid queries
-    console.print(f"[dim]🔍 Executing query against Azure Resource Graph...[/dim]")
+    tracker.started("arg-execute")
     try:
         result = execute_query(kql)
+        tracker.progress(f"query returned {result['count']} rows")
     except Exception as e:
         error_msg = str(e)
-        console.print(f"\n[yellow]⚠  Query error — attempting auto-fix...[/yellow]")
+        tracker.status("query error — attempting auto-fix")
         fixed_kql = _retry_kql(question, kql, error_msg)
         if not fixed_kql:
             console.print(f"[red]Could not fix query: {error_msg}[/red]")
             return
         kql = fixed_kql
+        tracker.progress("LLM corrected KQL")
         console.print(f"\n[bold yellow]Corrected KQL:[/bold yellow]")
         console.print(Syntax(kql, "sql", theme="monokai", padding=1))
         try:
             result = execute_query(kql)
+            tracker.progress(f"retry returned {result['count']} rows")
         except Exception as e2:
             console.print(f"[red]Retry also failed: {e2}[/red]")
             return
 
+    tracker.done("arg-execute", f"{result['count']} rows")
+
     console.print(f"\n[green]✓ Returned {result['count']} rows[/green]\n")
     if isinstance(result["data"], list) and result["data"]:
         _print_table(result["data"])
-        console.print(f"\n[dim]📊 Running CSA analysis...[/dim]")
+        tracker.started("csa-analysis")
+        tracker.status("running CSA analysis on results")
         _analyze_results(question, kql, result["data"])
+        tracker.progress("analysis complete")
+        tracker.done("csa-analysis")
     elif result["data"]:
         console.print(result["data"])
     else:
         console.print("[dim]No results returned.[/dim]")
+
+    tracker.summary()
 
 
 def _generate_kql(question: str) -> str | None:
