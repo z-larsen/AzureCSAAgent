@@ -54,7 +54,7 @@ Use the agent as a GitHub Copilot chat mode with full Azure Resource Graph acces
 
 ### What you get
 
-- Interactive chat with a senior Azure CSA persona
+- Interactive chat with an Azure CSA persona
 - Live ARG queries against your environment (generate → validate → execute)
 - Microsoft Learn documentation search and fetch
 - Built-in skills for FinOps, Landing Zone, Network, and WAF assessments
