@@ -1391,7 +1391,7 @@ def run_assessment(scope: str, assessment_type: str, output_dir: str, tee: bool 
 
     report_text = "\n".join(report_lines)
 
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write(report_text)
 
     tracker.progress(f"saved to {out_path}")
