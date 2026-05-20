@@ -122,30 +122,35 @@ def main(ctx: typer.Context):
             break
 
         # Parse interactive input
-        parts = user_input.split(maxsplit=1)
-        cmd = parts[0].lower()
+        try:
+            parts = user_input.split(maxsplit=1)
+            cmd = parts[0].lower()
 
-        if cmd == "assess" and len(parts) > 1:
-            _parse_assess(parts[1])
-        elif cmd == "deploy" and len(parts) > 1:
-            _run_deploy(parts[1].strip('"').strip("'"), conversation_history)
-        elif cmd == "query" and len(parts) > 1:
-            _run_query(parts[1].strip('"').strip("'"), conversation_history)
-        elif cmd in ("help", "?"):
-            console.print(HELP_TEXT)
-        elif cmd == "clear":
-            conversation_history.clear()
-            console.print("[dim]Conversation history cleared.[/dim]")
-        else:
-            # Detect IaC intent in natural language and route accordingly
-            iac_keywords = ["deploy", "bicep", "terraform", "infrastructure", "iac",
-                           "provision", "arm template", "landing zone template",
-                           "generate bicep", "generate terraform", "hub-spoke",
-                           "verified module", "avm"]
-            if any(kw in user_input.lower() for kw in iac_keywords):
-                _run_deploy(user_input, conversation_history)
+            if cmd == "assess" and len(parts) > 1:
+                _parse_assess(parts[1])
+            elif cmd == "deploy" and len(parts) > 1:
+                _run_deploy(parts[1].strip('"').strip("'"), conversation_history)
+            elif cmd == "query" and len(parts) > 1:
+                _run_query(parts[1].strip('"').strip("'"), conversation_history)
+            elif cmd in ("help", "?") and len(parts) == 1:
+                console.print(HELP_TEXT)
+            elif cmd == "clear":
+                conversation_history.clear()
+                console.print("[dim]Conversation history cleared.[/dim]")
             else:
-                _run_query(user_input, conversation_history)
+                # Detect IaC intent in natural language and route accordingly
+                iac_keywords = ["deploy", "bicep", "terraform", "infrastructure", "iac",
+                               "provision", "arm template", "landing zone template",
+                               "generate bicep", "generate terraform", "hub-spoke",
+                               "verified module", "avm"]
+                if any(kw in user_input.lower() for kw in iac_keywords):
+                    _run_deploy(user_input, conversation_history)
+                else:
+                    _run_query(user_input, conversation_history)
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            import traceback
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
 def _parse_assess(args_str: str):

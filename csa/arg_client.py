@@ -121,6 +121,15 @@ advisorresources
 ```
 
 ALWAYS include the Advisor cost recommendations query when the topic is cost savings — it's the single most valuable data source because it contains actual utilization metrics and dollar amounts.
+
+CRITICAL — Resource name resolution:
+- NEVER return raw GUIDs or subscription IDs as the primary identifier for a resource. Always include the human-readable resource name.
+- For Advisor recommendations: `properties.impactedValue` often contains the resource name. Also extract the resource name from `properties.resourceMetadata.resourceId` using: `tostring(split(properties.resourceMetadata.resourceId, '/')[(-1)])`
+- For any field containing a full ARM resource ID path (`/subscriptions/.../providers/.../resourceName`), extract the trailing name segment using `split()`
+- When joining tables, always project the `name` column from the resources table
+- Example — extracting name from resourceId:
+  `extend resourceName = tostring(split(properties.resourceMetadata.resourceId, '/')[-1])`
+- If `impactedValue` is a GUID, ALWAYS also extract the name from `resourceMetadata.resourceId`
 """
 
 ANALYSIS_SYSTEM_PROMPT = """You are a senior Azure Cloud Solution Architect with 25 years of experience.
@@ -135,12 +144,39 @@ Given a user's question and the Azure Resource Graph query results, provide a co
 Keep it practical and direct. Use bullet points. Reference specific resources from the results by name.
 Do NOT repeat the raw data. Do NOT pad with generic Azure marketing language.
 If the data is insufficient to fully answer the question, say what additional queries or investigations would help.
+
+CRITICAL — Resource naming:
+- ALWAYS refer to resources by their human-readable name (e.g., "vm-backend-a"), NEVER by raw GUIDs or subscription IDs.
+- If the data contains ARM resource ID paths (e.g., /subscriptions/.../providers/.../myResource), extract and use the trailing resource name.
+- If the data only contains GUIDs with no name, note this as a limitation and describe the resource by its type and context instead.
+- When listing resources, use the format: `resourceName` (resource group: `rgName`)
 """
 
 
 def get_client() -> ResourceGraphClient:
     credential = DefaultAzureCredential()
     return ResourceGraphClient(credential)
+
+
+def _resolve_resource_ids(data: list[dict]) -> list[dict]:
+    """Enrich query result rows by resolving ARM resource IDs and GUIDs to human-readable names.
+
+    Scans all string values for ARM resource ID patterns and extracts the trailing resource name.
+    Adds a `_resolved_<field>` key with the friendly name for any field containing an ARM path.
+    """
+    arm_pattern = re.compile(r"^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/.+/([^/]+)$", re.IGNORECASE)
+
+    enriched = []
+    for row in data:
+        new_row = dict(row)
+        for key, value in row.items():
+            if not isinstance(value, str):
+                continue
+            match = arm_pattern.match(value)
+            if match:
+                new_row[f"_resolved_{key}"] = match.group(1)
+        enriched.append(new_row)
+    return enriched
 
 
 def _get_openai_client():
@@ -250,6 +286,8 @@ def ask(question: str, history: list[dict] | None = None) -> str | None:
     tracker.started("kql-generation")
     kql_response = _generate_kql(question, history)
     if not kql_response:
+        console.print("[red]Failed to generate KQL — check LLM backend configuration.[/red]")
+        tracker.done("kql-generation", "failed")
         return None
     tracker.progress("LLM generated KQL")
     tracker.done("kql-generation")
@@ -481,8 +519,9 @@ def _analyze_results(question: str, kql: str, data: list[dict], history: list[di
     if not client:
         return None
 
-    # Truncate data for context window — send up to 30 rows
-    sample = data[:30]
+    # Resolve ARM resource IDs to human-readable names, then truncate for context window
+    resolved = _resolve_resource_ids(data)
+    sample = resolved[:30]
     data_summary = json.dumps(sample, indent=2, default=str)
     if len(data) > 30:
         data_summary += f"\n\n... ({len(data) - 30} additional rows not shown)"
@@ -544,10 +583,11 @@ def _analyze_multi_results(question: str, results: list[dict], history: list[dic
     if not client:
         return None
 
-    # Build a combined data summary — limit each query to 15 rows to fit context
+    # Resolve ARM resource IDs to names, then build combined data summary
     sections = []
     for r in results:
-        sample = r["data"][:15]
+        resolved = _resolve_resource_ids(r["data"])
+        sample = resolved[:15]
         data_str = json.dumps(sample, indent=2, default=str)
         if len(r["data"]) > 15:
             data_str += f"\n... ({len(r['data']) - 15} additional rows not shown)"
