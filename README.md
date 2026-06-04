@@ -276,11 +276,11 @@ export AZURE_OPENAI_API_KEY=<your-key>
 └── .gitignore
 ```
 
-## Skills (18 total)
+## Skills (24 total)
 
 The VS Code chat mode invokes skills to structure assessments and ground recommendations. Skills are loaded automatically when the agent detects a matching topic.
 
-### Included in this repo (4)
+### Included in this repo (10)
 
 These ship with the agent and are always available:
 
@@ -290,6 +290,12 @@ These ship with the agent and are always available:
 | `landing-zone-assessment` | CAF alignment, management group hierarchy, subscription org, policy coverage, identity |
 | `network-review` | VNet topology, peering, private endpoints, DNS resolution, NSG audit, hybrid connectivity, vWAN |
 | `well-architected-review` | All five WAF pillars (Reliability, Security, Cost, Ops Excellence, Performance) with per-pillar scorecards |
+| `azure-identity` | Two-plane identity posture — Azure RBAC (ARG) plus Entra ID via Microsoft Graph: Conditional Access, PIM, MFA, risky users, guests |
+| `azure-monitoring` | Proactive observability — Log Analytics topology, diagnostic-settings coverage, AMA migration, alerts/action groups, App Insights, ingestion cost |
+| `azure-data-platform` | Data tier review (SQL, Cosmos, PostgreSQL, MySQL, Redis) — HA, backup/RPO, TDE/CMK, network exposure, right-sizing |
+| `azure-ai-foundry` | Foundry architecture, deployment models, tokenomics (PTU vs PAYG), RAG/agents, and automation-opportunity assessment |
+| `azure-iac-avm` | Scaffold Bicep/Terraform on Azure Verified Modules — language-preference, AVM composition, greenfield + brownfield import |
+| `landing-zone-migration` | Deployment-model modernization into a CAF landing zone — migrate-vs-redeploy decisions, gotchas, sequencing, target diagram |
 
 ### Azure platform skills (14)
 
